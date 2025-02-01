@@ -2,12 +2,14 @@ name: Auto Release
 
 on:
   push:
-    branches: [ "main" ]
-  workflow_dispatch:
+    branches:
+      - main
 
 jobs:
   release:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
 
     steps:
       - name: Checkout repository
@@ -27,12 +29,13 @@ jobs:
           fi
           echo "new_version=$latest_tag" >> $GITHUB_ENV
 
-      - name: Create Release
+      - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ env.new_version }}
+          name: "Release ${{ env.new_version }}"
           draft: false
           prerelease: false
-          files: '**/*.py' 
+          files: '**/*.py'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

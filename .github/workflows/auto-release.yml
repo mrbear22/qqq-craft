@@ -36,8 +36,6 @@ jobs:
           release_name: "Release ${{ env.new_version }}"
           draft: false
           prerelease: false
-          files: 
-            - '**/*.py'  # Додаємо всі файли Python
-            - '**/*.md'  # Додаємо README та інші документи
+          files: '**/*.py'  # Додаємо всі файли Python
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

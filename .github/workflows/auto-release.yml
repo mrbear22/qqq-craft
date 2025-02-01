@@ -37,7 +37,7 @@ jobs:
           draft: false
           prerelease: false
           files: 
-            - '**/*.java'  # Додаємо всі файли вихідного коду
-            - '**/*.md'    # Додаємо README та інші документи
+            - '**/*.py'  # Додаємо всі файли Python
+            - '**/*.md'  # Додаємо README та інші документи
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -13,7 +13,6 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # Отримання останнього тега з GitHub
       - name: Get latest tag
         id: get_version
         run: |
@@ -28,14 +27,12 @@ jobs:
           fi
           echo "new_version=$latest_tag" >> $GITHUB_ENV
 
-      # Створення нового релізу з вихідним кодом
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ env.new_version }}
-          release_name: "Release ${{ env.new_version }}"
           draft: false
           prerelease: false
-          files: '**/*.py'
+          files: '**/*.py' 
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

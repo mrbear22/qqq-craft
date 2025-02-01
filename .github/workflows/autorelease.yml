@@ -15,36 +15,26 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0  # Отримуємо всю історію та теги
+          fetch-depth: 0 
 
       - name: Get latest tag and increment version
         id: get_version
         run: |
           git fetch --tags  # Отримуємо всі теги
 
-          # Отримуємо останній тег
-          latest_tag=$(git tag --sort=-v:refname | head -n 1)
-
-          # Якщо тегів немає, встановлюємо початкову версію
-          if [[ -z "$latest_tag" ]]; then
-            latest_tag="1.0.0.0"
-          fi
-
-          # Видаляємо "v", якщо він є
+          latest_tag=$(git describe --tags --abbrev=0 2>/dev/null || echo "1.0.0.0")
+          
           latest_version=$(echo $latest_tag | sed 's/^v//')
 
-          # Розділяємо версію
           IFS='.' read -r major minor patch build <<< "$latest_version"
 
-          # Збільшуємо версію
           patch=$((patch + 1))
           new_version="$major.$minor.$patch.0"
 
-          # Виводимо нову версію
           echo "new_version=$new_version" >> $GITHUB_ENV
-          echo "New version: $new_version"
+          echo "🔹 Нова версія: $new_version"
 
-      - name: Create new tag
+      - name: Create and push new tag
         run: |
           git tag ${{ env.new_version }}
           git push origin ${{ env.new_version }}

@@ -29,13 +29,15 @@ def get_resource_path(relative_path):
 
 BASE_DIR = os.path.join(os.environ.get("USERPROFILE", ""), "AppData", "Local", "Programs", "QQQ-CRAFT")
 INSTALL_DIR = os.path.join(BASE_DIR, "GameData")
+USERDATA_FILE = os.path.join(BASE_DIR, "user.json")
+
 FLASK_PORT = 7776
 WEBSOCKET_PORT = 8765
+
 app = Flask(__name__)
 connected_clients = set()
 app_qt = QApplication(sys.argv)
 window = None
-USERDATA_FILE = os.path.join(BASE_DIR, "user.json")
 
 log = logging.getLogger('werkzeug')
 log.setLevel(logging.ERROR)
@@ -101,9 +103,8 @@ def index():
             news = response.json()
             for news_item in news:
                 if news_item.get("description"):
-                    news_item["description"] = markdown.markdown(news_item["description"])  # Convert description to HTML
+                    news_item["description"] = markdown.markdown(news_item["description"])
                 if news_item.get("timestamp"):
-                    # Clean timestamp format (remove milliseconds and timezone)
                     news_item["timestamp"] = news_item["timestamp"].split(".")[0].replace("T", " ").split("+")[0]
         except Exception as e:
             app.logger.error(f"Помилка завантаження новин: {e}")

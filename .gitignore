@@ -35,6 +35,8 @@ logs/
 package-lock.json
 yarn.lock
 pnpm-lock.yaml
+signtool.txt
+app.spec
 
 *.o
 *.obj

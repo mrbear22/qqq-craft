@@ -18,14 +18,14 @@ jobs:
       - name: Get latest tag
         id: get_version
         run: |
-          latest_tag=$(git ls-remote --tags --sort="v:refname" origin | tail -n1 | awk -F'/' '{print $NF}')
+          latest_tag=$(git ls-remote --tags --sort="version:refname" origin | tail -n1 | awk -F'/' '{print $NF}')
           if [[ -z "$latest_tag" ]]; then
-            latest_tag="v1.0.0"
+            latest_tag="1.0.0.0"
           else
-            latest_version=$(echo $latest_tag | sed 's/v//')
-            IFS='.' read -r major minor patch <<< "$latest_version"
+            latest_version=$(echo $latest_tag | sed 's/^v//')
+            IFS='.' read -r major minor patch build <<< "$latest_version"
             patch=$((patch + 1))
-            latest_tag="v$major.$minor.$patch"
+            latest_tag="$major.$minor.$patch.0"
           fi
           echo "new_version=$latest_tag" >> $GITHUB_ENV
 

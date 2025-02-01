@@ -108,7 +108,6 @@ def index():
         except Exception as e:
             app.logger.error(f"Помилка завантаження новин: {e}")
         return news
-        
     return render_template("index.html", news=get_news(), data=get_data()) 
     
 @app.route('/start', methods=['POST'])
@@ -127,12 +126,9 @@ def start():
         return True, "Нікнейм валідний."
     
     try:
-
         data = request.get_json()
-
         mc_version = "1.21.1"
         fabric_version = "0.16.10"  
-        
         is_valid, message = validate_nickname(data.get('nickname'))
         
         if (is_valid):
@@ -147,7 +143,6 @@ def start():
         else:
             send_log(message)
             return jsonify({"success": False, "error": message})
-
     except Exception as e:
         error_message = traceback.format_exc()
         app.logger.error(error_message) 
@@ -155,9 +150,7 @@ def start():
 
 
 def setup_minecraft(mc_version, fabric_version):
-    
     try:
-    
         src_dir = get_resource_path("static/game/")
         for item in os.listdir(src_dir):
             src_item = os.path.join(src_dir, item)
@@ -174,23 +167,18 @@ def setup_minecraft(mc_version, fabric_version):
             send_log("Встановлення Fabric...")
             minecraft_launcher_lib.fabric.install_fabric(mc_version, INSTALL_DIR)
             send_log("Fabric успішно встановлено.")
-            
     except Exception as e:
         error_message = traceback.format_exc()
         app.logger.error(error_message) 
         
 
 def launch_minecraft(mc_version, fabric_version, data):
-    
     try:
-        
         def generate_offline_uuid(nickname):
             namespace = uuid.UUID('00000000-0000-0000-0000-000000000000') 
             return uuid.uuid3(namespace, "OfflinePlayer:" + nickname)
-            
         send_log("Підготовка до запуску гри...")
         fabric_loader_name = f"fabric-loader-{fabric_version}-{mc_version}"
-        
         nickname = data.get('nickname')
         width, height = data.get('windowSize', '1024x768').split('x')
         options = {
@@ -205,7 +193,6 @@ def launch_minecraft(mc_version, fabric_version, data):
             "resolutionHeight": height,
             "fullscreen": data.get('fullscreen'),
         }
-        
         if data.get('multiplayer', False):
             options["quickPlayMultiplayer"] = "play.qqq-craft.top"
             
@@ -216,7 +203,6 @@ def launch_minecraft(mc_version, fabric_version, data):
             window.close()
         threading.Timer(20.0, close_window).start()
         subprocess.run(command, cwd=INSTALL_DIR, creationflags=subprocess.CREATE_NO_WINDOW)
-        
     except Exception as e:
         error_message = traceback.format_exc()
         app.logger.error(error_message) 

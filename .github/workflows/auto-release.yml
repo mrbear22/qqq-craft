@@ -28,19 +28,7 @@ jobs:
           fi
           echo "new_version=$latest_tag" >> $GITHUB_ENV
 
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: qqq-craft
-          path: dist/qqq-craft.exe
-
-      - name: Download artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: qqq-craft
-          path: dist
-
-      # Створення нового релізу
+      # Створення нового релізу з вихідним кодом
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
@@ -48,6 +36,8 @@ jobs:
           release_name: "Release ${{ env.new_version }}"
           draft: false
           prerelease: false
-          files: dist/qqq-craft.exe
+          files: 
+            - '**/*.java'  # Додаємо всі файли вихідного коду
+            - '**/*.md'    # Додаємо README та інші документи
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

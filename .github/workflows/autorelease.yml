@@ -36,6 +36,5 @@ jobs:
           name: "Release ${{ env.new_version }}"
           draft: false
           prerelease: false
-          files: '**/*.py'
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.QQQ }}

@@ -1,0 +1,176 @@
+<!DOCTYPE html>
+<html lang="uk">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>QQQ - Час стати легендою!</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
+	<link rel="icon" href="{{ url_for('static', filename='logo.ico') }}">
+    <script src="https://code.jquery.com/jquery-3.6.4.min.js"></script>
+</head>
+<body>
+	<div class="container">
+		<div class="news">
+			<div id="news-list">
+				{% if news %}
+					<h1>Новини</h1>
+					{% for news_item in news %}
+						<div class="new">
+							{% if news_item.image %}
+								<div class="news-image">
+									<img src="{{ news_item.image }}" alt="Зображення для новини">
+								</div>
+							{% endif %}
+							<div class="news-content">
+								{% if news_item.title %}
+									<strong class="news-title">{{ news_item.title }}</strong>
+								{% endif %}
+								{% if news_item.timestamp %}
+									<div class="news-timestamp">
+										<small>Дата публікації: {{ news_item.timestamp }}</small>
+									</div>
+								{% endif %}
+								{% if news_item.description %}
+									<p class="news-description">{{ news_item.description | safe }}</p>
+								{% endif %}
+								{% if news_item.footer %}
+									<div class="news-footer">{{ news_item.footer }}</div>
+								{% endif %}
+
+								{% if news_item.reactions %}
+									<div class="reactions">
+										{% for reaction in news_item.reactions %}
+											<button class="reaction-button">{{ reaction.emoji }} {{ reaction.count }}</button>
+										{% endfor %}
+									</div>
+								{% endif %}
+
+								{% if news_item.message_link %}
+									<div style="text-align: right;">
+									<!--	<a href="{{ news_item.message_link }}" class="news-link" target="_blank">Детальніше</a> -->
+									</div>
+								{% endif %}
+
+								{% if news_item.comments %}
+									<div class="comments">
+										<h4>Коментарі:</h4>
+										{% for comment in news_item.comments %}
+											<div class="comment"><strong>{{ comment.author.global_name }}</strong>: {{ comment.content }}</div>
+										{% endfor %}
+									</div>
+								{% else %}
+									<div class="comments"><p>Немає коментарів.</p></div>
+								{% endif %}
+							</div>
+						</div>
+					{% endfor %}
+				{% else %}
+					<p>Не вдалося завантажити новини.</p>
+				{% endif %}
+			</div>
+		</div>
+		<div class="login-panel"><br>
+			<img src="/static/logo.png" width="100px" /><br>
+			<h1>Вхід</h1>
+			<form action="/start" method="post">
+				<label for="nickname">Ваш нікнейм:</label>
+				<input type="text" id="nickname" class="input" placeholder="Joseph" name="nickname" 
+					{% if data and data.nickname %} value="{{ data.nickname }}" {% endif %}><br>
+				<details>
+					<summary>Параметри</summary>
+					<div class="settings">
+						<label for="ram">Оперативна пам'ять:</label>
+						<select name="ram" class="input" id="ram">
+							<option value="2G" {% if data and data.ram == '2G' %} selected {% endif %}>2GB</option>
+							<option value="4G" {% if data and data.ram == '4G' %} selected {% endif %}>4GB</option>
+							<option value="8G" {% if data and data.ram == '8G' %} selected {% endif %}>8GB</option>
+						</select><br>
+						<label for="windowSize">Розмір вікна:</label>
+						<select name="windowSize" class="input" id="windowSize">
+							<option value="1280x720" {% if data and data.windowSize == '1280x720' %} selected {% endif %}>1280x720</option>
+							<option value="1920x1080" {% if data and data.windowSize == '1920x1080' %} selected {% endif %}>1920x1080</option>
+						</select><br>
+						<div>
+							<label for="multiplayer">Вхід на сервер:</label>
+							<input type="checkbox" id="multiplayer" name="multiplayer"
+								{% if data and data|length > 0 %}
+									{% if data.multiplayer == true %}
+										checked
+									{% endif %}
+								{% else %}
+									checked
+								{% endif %}>
+						</div>
+						<div>
+						<!--	<label for="fullscreen">Повноекранний режим:</label>
+							<input type="checkbox" id="fullscreen" name="fullscreen" 
+								{% if data and data.fullscreen %} checked {% endif %}> -->
+						</div>
+						<a href="#" onclick="fetch('/game_folder')">📂 Папка гри</a>
+					</div>
+				</details>
+				<div id="log-box" style="padding: 10px; overflow-y: auto;">
+					<div id="logs"></div>
+				</div>
+				<button type="submit" class="button" id="start">До гри ⚔️</button>
+			</form>
+		</div>
+	</div>
+	<script>
+	
+		function appendLog(message) {
+			const logs = document.getElementById("logs");
+			logs.innerHTML = '';
+			const logEntry = document.createElement("div");
+			logEntry.textContent = message;
+			logs.appendChild(logEntry);
+			logs.scrollTop = logs.scrollHeight;
+		}
+	
+		$(document).ready(function () {
+			document.addEventListener('contextmenu', event => event.preventDefault());
+			$('#start').click(function (event) {
+				event.preventDefault();
+				const payload = {
+					nickname: $('#nickname').val(),
+					ram: $('#ram').val(),
+					windowSize: $('#windowSize').val(),
+					multiplayer: $('#multiplayer').is(':checked'),
+					fullscreen: $('#fullscreen').is(':checked')
+				};
+				$(this).prop('disabled', true);
+				fetch('/start', {
+					method: 'POST',
+					headers: { 'Content-Type': 'application/json' },
+					body: JSON.stringify(payload)
+				})
+					.then(response => response.json())
+					.then(data => appendLog(data.success ? "Процес завершено успішно." : `${data.error}`))
+					.catch(error => appendLog(`Виникла помилка: ${error.message}`))
+					.finally(() => $('#start').prop('disabled', false));
+			});
+
+		});
+		
+		const logsDiv = document.getElementById("logs");
+		const socket = new WebSocket("ws://127.0.0.1:8765");
+
+		socket.onmessage = function (event) {
+			appendLog(event.data);
+		};
+
+		socket.onopen = function () {
+			console.log("Підключення до вебсокетів встановлено.");
+		};
+
+		socket.onclose = function () {
+			console.log("Підключення до вебсокетів закрито.");
+		};
+
+		socket.onerror = function (error) {
+			console.error("Помилка вебсокетів:", error);
+		};
+		
+	</script>
+</body>
+</html>

@@ -1,0 +1,1 @@
+"C:\Program Files (x86)\Windows Kits\10\bin\x64\signtool.exe" sign /f "C:\Users\miishanii\Desktop\launcher\Certificate.pfx" /t http://timestamp.digicert.com /fd sha256 $f

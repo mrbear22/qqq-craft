@@ -1,0 +1,8 @@
+Flask
+PyQt5
+PyQtWebEngine
+minecraft-launcher-lib
+websockets
+requests
+markdown
+asyncio

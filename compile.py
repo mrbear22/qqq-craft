@@ -2,6 +2,7 @@ import os
 import requests
 import PyInstaller.__main__
 from packaging import version
+import subprocess
 
 def get_latest_version():
     repo_url = "https://api.github.com/repos/mrbear22/qqq-craft/releases/latest"
@@ -11,7 +12,7 @@ def get_latest_version():
         return data["tag_name"]
     else:
         print(f"Не вдалося отримати інформацію про версії. Статус: {response.status_code}")
-        print(response.text) 
+        print(response.text)
         return None
 
 def increment_version(latest_version):
@@ -19,15 +20,17 @@ def increment_version(latest_version):
     new_version = f"{v.major}.{v.minor}.{v.micro + 1}"
     return new_version
 
-script_path = 'app.py'
+scripts = ['launcher', 'updater']
+signtool = "C:\\Program Files (x86)\\Windows Kits\\10\\bin\\x64\\signtool.exe"
+cert_path = "Certificate.pfx"
+timestamp_url = "http://timestamp.digicert.com"
 icon_path = 'static/logo.ico'
 version_file = 'version_info.txt'
-
 latest_version = get_latest_version()
+
 if latest_version:
     new_version = increment_version(latest_version)
     print(f"Нова версія: {new_version}")
-    
     version_info = f"""
 # UTF-8
 #
@@ -67,14 +70,35 @@ VSVersionInfo(
     with open(version_file, 'w', encoding='utf-8') as f:
         f.write(version_info)
 
-    PyInstaller.__main__.run([
-        '--onefile',
-        '--noconsole',
-        '--add-data', f'static{os.pathsep}static',
-        '--add-data', f'templates{os.pathsep}templates',
-        '--icon', icon_path,
-        '--version-file', version_file,
-        script_path
-    ])
+    for script in scripts:
+        install_command = [
+            '--onefile',
+            '--noconsole',
+            '--add-data', f'static{os.pathsep}static',
+            '--icon', icon_path,
+            '--version-file', version_file,
+            f'{script}.py'
+        ]
+        
+        if script == "launcher":
+            install_command.append('--add-data')
+            install_command.append(f'templates{os.pathsep}templates')
+            
+            install_command.append('--add-data')
+            install_command.append(f'game{os.pathsep}game')
+        
+        PyInstaller.__main__.run(install_command)
+
+        sign_command = [
+            signtool,
+            "sign",
+            "/f", cert_path,
+            "/t", timestamp_url,
+            "/fd", "sha256",
+            f'dist/{script}.exe'
+        ]
+
+        subprocess.run(sign_command)
+
 else:
     print("Не вдалося отримати або збільшити версію.")

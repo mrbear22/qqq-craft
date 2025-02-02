@@ -152,7 +152,7 @@ def start():
 
 def setup_minecraft(mc_version, fabric_version):
     try:
-        src_dir = get_resource_path("static/game/")
+        src_dir = get_resource_path("game/")
         for item in os.listdir(src_dir):
             src_item = os.path.join(src_dir, item)
             dest_item = os.path.join(INSTALL_DIR, item)

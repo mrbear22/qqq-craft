@@ -25,7 +25,7 @@ signtool = "C:\\Program Files (x86)\\Windows Kits\\10\\bin\\x64\\signtool.exe"
 cert_path = "Certificate.pfx"
 timestamp_url = "http://timestamp.digicert.com"
 icon_path = 'static/logo.ico'
-version_file = 'version_info.txt'
+version_file = 'version.txt'
 latest_version = get_latest_version()
 
 if latest_version:

@@ -46,6 +46,5 @@ jobs:
           name: "Release ${{ env.new_version }}"
           draft: false
           prerelease: false
-          files: "qqq-craft.*"
         env:
           GITHUB_TOKEN: ${{ secrets.QQQ }}

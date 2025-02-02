@@ -4,11 +4,13 @@ from PyQt5.QtWebEngineWidgets import QWebEngineProfile, QWebEnginePage, QWebEngi
 from PyQt5.QtGui import QIcon
 from PyQt5.QtCore import QUrl
 import minecraft_launcher_lib
+from packaging import version
 import websockets
 import subprocess
 import threading
 import traceback
 import markdown
+import win32api
 import requests
 import logging
 import asyncio
@@ -27,6 +29,7 @@ def get_resource_path(relative_path):
         base_path = os.path.abspath(".")
     return os.path.join(base_path, relative_path)
 
+REPO_API_URL = "https://api.github.com/repos/mrbear22/qqq-craft/releases/latest"
 BASE_DIR = os.path.join(os.environ.get("USERPROFILE", ""), "AppData", "Local", "Programs", "QQQ-CRAFT")
 INSTALL_DIR = os.path.join(BASE_DIR, "GameData")
 USERDATA_FILE = os.path.join(BASE_DIR, "user.json")
@@ -45,6 +48,28 @@ log.setLevel(logging.ERROR)
 log_file = os.path.join(BASE_DIR, "logs.txt")
 sys.stdout = open(log_file, "a", encoding="utf-8")
 sys.stderr = sys.stdout
+
+def get_exe_version(path):
+    try:
+        app.logger.info(f"Getting version for {path}")
+        info = win32api.GetFileVersionInfo(path, "\\")
+        ms = info['FileVersionMS']
+        ls = info['FileVersionLS']
+        version = f"{win32api.HIWORD(ms)}.{win32api.LOWORD(ms)}.{win32api.HIWORD(ls)}.{win32api.LOWORD(ls)}"
+        app.logger.info(f"Found version: {version}")
+        return version
+    except Exception as e:
+        app.logger.error(f"Error getting version for {path}: {e}")
+        return "0.0.0.0"
+
+def get_latest_version():
+    try:
+        response = requests.get(REPO_API_URL)
+        if response.status_code == 200:
+            return response.json().get("tag_name", "0.0.0.0")
+    except requests.RequestException:
+        pass
+    return "0.0.0.0"
 
 class BrowserWindow(QMainWindow):
     def __init__(self):
@@ -83,6 +108,10 @@ class BrowserWindow(QMainWindow):
         y = (screen_geometry.height() - self.height()) // 2
         self.move(x, y)
 
+@app.route('/update')
+def update():
+    subprocess.run(['explorer', "https://qqq-craft.top/game"])
+
 @app.route('/static/<filename>')
 def static_file(filename):
     return send_from_directory(get_resource_path('static'), filename)
@@ -109,7 +138,17 @@ def index():
         except Exception as e:
             app.logger.error(f"Помилка завантаження новин: {e}")
         return news
-    return render_template("index.html", news=get_news(), data=get_data()) 
+    
+    def is_latest_version():
+                
+        local_version = get_exe_version(os.path.join(BASE_DIR, "launcher.exe"))
+        latest_version = get_latest_version()
+        
+        print(version.parse(local_version) >= version.parse(latest_version))
+        
+        return version.parse(local_version) >= version.parse(latest_version)
+
+    return render_template("index.html", news=get_news(), data=get_data(), is_latest_version=is_latest_version()) 
     
 @app.route('/start', methods=['POST'])
 def start():
@@ -207,7 +246,6 @@ def launch_minecraft(mc_version, fabric_version, data):
     except Exception as e:
         error_message = traceback.format_exc()
         app.logger.error(error_message) 
-        
     
 def save_data(data):
     try:

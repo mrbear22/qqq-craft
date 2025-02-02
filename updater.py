@@ -6,7 +6,6 @@ import tkinter as tk
 from tkinter import ttk, messagebox
 from packaging import version
 import win32api
-import subprocess
 
 LAUNCHER_DIR = os.path.join(os.environ.get("USERPROFILE", ""), "AppData", "Local", "Programs", "QQQ-CRAFT")
 LAUNCHER_PATH = os.path.join(LAUNCHER_DIR, "launcher.exe")
@@ -108,11 +107,12 @@ def main():
             if download_new_version():
                 with zipfile.ZipFile(ZIP_PATH, 'r') as zip_ref:
                     zip_ref.extractall(LAUNCHER_DIR)
-                """show_message("Готово!", "Оновлення завантажено та розпаковано.\nЗапустіть лаунчер повторно.")"""
+                subprocess.run(LAUNCHER_PATH);
+                show_message("Готово!", "Оновлення завантажено та розпаковано.\nЗапустіть лаунчер повторно.")
             else:
                 show_message("Помилка", "Не вдалося завантажити оновлення.")
-                
-    subprocess.run(LAUNCHER_PATH);
+    else:
+        show_message("Оновлення", "У вас найновіша версія.")
 
 if __name__ == "__main__":
     main()

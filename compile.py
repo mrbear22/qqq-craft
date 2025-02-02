@@ -20,7 +20,7 @@ def increment_version(latest_version):
     new_version = f"{v.major}.{v.minor}.{v.micro + 1}"
     return new_version
 
-scripts = ['launcher', 'updater']
+scripts = ['launcher']
 signtool = "C:\\Program Files (x86)\\Windows Kits\\10\\bin\\x64\\signtool.exe"
 cert_path = "Certificate.pfx"
 timestamp_url = "http://timestamp.digicert.com"

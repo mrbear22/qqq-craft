@@ -27,7 +27,6 @@ logs/
 *.log
 *.tmp
 *.cache
-*.exe
 
 .env
 .env.local
@@ -37,7 +36,9 @@ package-lock.json
 yarn.lock
 pnpm-lock.yaml
 signtool.txt
+version_info.txt
 
+*.exe
 *.spec
 *.o
 *.obj

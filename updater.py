@@ -1,21 +1,23 @@
 import requests
 import os
 import sys
-import subprocess
+import zipfile
 import tkinter as tk
 from tkinter import ttk, messagebox
 from packaging import version
-import pefile
 import win32api
+import subprocess
 
-LAUNCHER_PATH = os.path.join(os.environ.get("USERPROFILE", ""), "AppData", "Local", "Programs", "QQQ-CRAFT", "launcher.exe")
-DOWNLOAD_URL = "https://qqq-craft.top/launcher/launcher.exe"
+LAUNCHER_DIR = os.path.join(os.environ.get("USERPROFILE", ""), "AppData", "Local", "Programs", "QQQ-CRAFT")
+LAUNCHER_PATH = os.path.join(LAUNCHER_DIR, "launcher.exe")
+DOWNLOAD_URL = "https://qqq-craft.top/launcher/launcher.zip"
 REPO_API_URL = "https://api.github.com/repos/mrbear22/qqq-craft/releases/latest"
+ZIP_PATH = os.path.join(LAUNCHER_DIR, "launcher.zip")
 
-def show_error_message(message):
+def show_message(title, message):
     root = tk.Tk()
     root.withdraw()
-    messagebox.showerror("Помилка", message)
+    messagebox.showinfo(title, message)
     root.destroy()
 
 def get_exe_version(path):
@@ -31,14 +33,10 @@ def get_latest_version():
     try:
         response = requests.get(REPO_API_URL)
         if response.status_code == 200:
-            data = response.json()
-            return data["tag_name"]
-        else:
-            show_error_message("Не вдалося отримати останню версію. Перевірте з'єднання з інтернетом.")
-            sys.exit()
+            return response.json().get("tag_name", "0.0.0.0")
     except requests.RequestException:
-        show_error_message("Не вдалося підключитися до інтернету. Перевірте з'єднання.")
-        sys.exit()
+        pass
+    return "0.0.0.0"
 
 def download_new_version():
     try:
@@ -46,25 +44,22 @@ def download_new_version():
         total_size = int(response.headers.get('content-length', 0))
 
         if response.status_code == 200:
-            with open(LAUNCHER_PATH, 'wb') as f, ProgressWindow(total_size) as progress:
+            with open(ZIP_PATH, 'wb') as f, ProgressWindow(total_size) as progress:
                 for chunk in response.iter_content(1024):
-                    if chunk:
-                        f.write(chunk)
-                        progress.update_progress(len(chunk))
-        else:
-            show_error_message("Не вдалося завантажити файл. Перевірте з'єднання з інтернетом.")
-            sys.exit()
+                    f.write(chunk)
+                    progress.update_progress(len(chunk))
+            return True
     except requests.RequestException:
-        show_error_message("Не вдалося завантажити файл. Перевірте з'єднання з інтернетом.")
-        sys.exit()
+        pass
+    return False
 
 class ProgressWindow:
     def __init__(self, total_size):
         self.total_size = total_size
         self.downloaded = 0
         self.root = tk.Tk()
-        self.root.title("Оновлення...")
-        
+        self.root.title("Завантаження...")
+
         screen_width = self.root.winfo_screenwidth()
         screen_height = self.root.winfo_screenheight()
 
@@ -86,17 +81,12 @@ class ProgressWindow:
         self.progress = ttk.Progressbar(self.root, length=250, mode="determinate")
         self.progress.pack(pady=5)
 
-        self.root.protocol("WM_DELETE_WINDOW", self.on_close)  
         self.root.update()
 
     def update_progress(self, size):
         self.downloaded += size
-        percent = (self.downloaded / self.total_size) * 100
-        self.progress["value"] = percent
+        self.progress["value"] = (self.downloaded / self.total_size) * 100
         self.root.update()
-
-    def on_close(self):
-        print("Не можна закрити вікно під час завантаження.")
 
     def __enter__(self):
         return self
@@ -108,17 +98,21 @@ def main():
     local_version = get_exe_version(LAUNCHER_PATH)
     latest_version = get_latest_version()
 
-    print(f"Локальна версія: {local_version}")
-    print(f"Остання версія на GitHub: {latest_version}")
+    if version.parse(local_version) < version.parse(latest_version):
+        root = tk.Tk()
+        root.withdraw()
+        result = messagebox.askyesno("Оновлення", f"Доступна нова версія {latest_version}. Завантажити?")
+        root.destroy()
 
-    if latest_version and version.parse(local_version) < version.parse(latest_version):
-        print("🔹 Доступне оновлення! Завантажуємо...")
-        download_new_version()
-    else:
-        print("✅ У вас найновіша версія!")
-
-    subprocess.Popen([LAUNCHER_PATH], shell=True)
-    sys.exit()
+        if result:
+            if download_new_version():
+                with zipfile.ZipFile(ZIP_PATH, 'r') as zip_ref:
+                    zip_ref.extractall(LAUNCHER_DIR)
+                """show_message("Готово!", "Оновлення завантажено та розпаковано.\nЗапустіть лаунчер повторно.")"""
+            else:
+                show_message("Помилка", "Не вдалося завантажити оновлення.")
+                
+    subprocess.run(LAUNCHER_PATH);
 
 if __name__ == "__main__":
     main()

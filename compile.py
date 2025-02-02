@@ -13,7 +13,7 @@ def get_latest_version():
     else:
         print(f"Не вдалося отримати інформацію про версії. Статус: {response.status_code}")
         print(response.text)
-        return None
+        return "1.0.0.0"
 
 def increment_version(latest_version):
     v = version.parse(latest_version)

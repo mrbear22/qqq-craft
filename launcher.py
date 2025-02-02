@@ -5,6 +5,8 @@ from PyQt5.QtGui import QIcon
 from PyQt5.QtCore import QUrl
 import minecraft_launcher_lib
 from packaging import version
+from tkinter import ttk, messagebox
+import tkinter as tk
 import websockets
 import subprocess
 import threading
@@ -21,6 +23,12 @@ import uuid
 import sys
 import os
 import re
+
+def show_message(title, message):
+    root = tk.Tk()
+    root.withdraw()
+    messagebox.showinfo(title, message)
+    root.destroy()
 
 def get_resource_path(relative_path):
     try:
@@ -143,8 +151,6 @@ def index():
                 
         local_version = get_exe_version(os.path.join(BASE_DIR, "launcher.exe"))
         latest_version = get_latest_version()
-        
-        print(version.parse(local_version) >= version.parse(latest_version))
         
         return version.parse(local_version) >= version.parse(latest_version)
 
@@ -303,12 +309,24 @@ def is_port_in_use(port):
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         return s.connect_ex(("127.0.0.1", port)) == 0
 
-
-
 if __name__ == "__main__":
+    
+    local_version = get_exe_version(os.path.join(BASE_DIR, "launcher.exe"))
+    latest_version = get_latest_version()
+
+    if version.parse(local_version) < version.parse(latest_version):
+        root = tk.Tk()
+        root.withdraw()
+        result = messagebox.askyesno("Оновлення", f"Доступна нова версія {latest_version}. Бажаєте завантажити?")
+        
+        if result:
+            subprocess.run(['explorer', "https://qqq-craft.top/game"])
+            sys.exit(1)
+    
     if is_port_in_use(FLASK_PORT):
         print(f"Помилка: порт {FLASK_PORT} вже використовується!")
         sys.exit(1) 
+
     threading.Thread(target=run_flask, daemon=True).start()
     threading.Thread(target=run_websocket, daemon=True).start()
     window = BrowserWindow()

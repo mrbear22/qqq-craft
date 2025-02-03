@@ -116,7 +116,7 @@
 				
 				<br>
 				{% if is_latest_version == False %}
-					<div id="update">Доступна нова версія! Будь ласка, завантажте її <u><a href="#" onclick="fetch('/update')">тут</a></u></div>
+					<div id="update">Доступна нова версія лаунчера! Будь ласка, завантажте її <u><a href="#" onclick="fetch('/update')">тут</a></u></div>
 				{% endif %}
 				
 			</form>
@@ -151,7 +151,7 @@
 					body: JSON.stringify(payload)
 				})
 					.then(response => response.json())
-					.then(data => appendLog(data.success ? "Процес завершено успішно." : `${data.error}`))
+					.then(data => appendLog(data.success ? "Процес гри завершився." : `${data.error}`))
 					.catch(error => appendLog(`Виникла помилка: ${error.message}`))
 					.finally(() => $('#start').prop('disabled', false));
 			});

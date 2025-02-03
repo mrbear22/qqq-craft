@@ -1,11 +1,7 @@
 from flask import Flask, render_template, request, jsonify, send_from_directory
-from PyQt5.QtWidgets import QApplication, QMainWindow, QVBoxLayout, QWidget
-from PyQt5.QtWebEngineWidgets import QWebEngineProfile, QWebEnginePage, QWebEngineView
-from PyQt5.QtGui import QIcon
-from PyQt5.QtCore import QUrl
+from tkinter import ttk, messagebox
 import minecraft_launcher_lib
 from packaging import version
-from tkinter import ttk, messagebox
 import tkinter as tk
 import websockets
 import subprocess
@@ -15,6 +11,7 @@ import markdown
 import win32api
 import requests
 import logging
+import webview
 import asyncio
 import shutil
 import socket
@@ -47,7 +44,6 @@ WEBSOCKET_PORT = 8765
 
 app = Flask(__name__)
 connected_clients = set()
-app_qt = QApplication(sys.argv)
 window = None
 
 log = logging.getLogger('werkzeug')
@@ -78,43 +74,6 @@ def get_latest_version():
     except requests.RequestException:
         pass
     return "0.0.0.0"
-
-class BrowserWindow(QMainWindow):
-    def __init__(self):
-        global window
-        super().__init__()
-        self.setWindowTitle("QQQ - Час стати легендою!")
-        self.setGeometry(0, 0, 1280, 720)
-        self.setMinimumSize(1280, 720)
-        self.setWindowIcon(QIcon(get_resource_path("static/logo.ico")))
-        
-        cache_path = os.path.join(BASE_DIR, "cache")
-        os.makedirs(cache_path, exist_ok=True)
-
-        self.profile = QWebEngineProfile("QQQProfile", self)
-        self.profile.setCachePath(cache_path)
-        self.profile.setPersistentStoragePath(cache_path)
-
-        self.page = QWebEnginePage(self.profile, self)
-
-        self.browser = QWebEngineView()
-        self.browser.setPage(self.page)
-        self.browser.setUrl(QUrl(f"http://127.0.0.1:{FLASK_PORT}/"))
-
-        layout = QVBoxLayout()
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.addWidget(self.browser)
-        container = QWidget()
-        container.setLayout(layout)
-        self.setCentralWidget(container)
-   
-        self.center_window()
-
-    def center_window(self):
-        screen_geometry = self.screen().geometry()
-        x = (screen_geometry.width() - self.width()) // 2
-        y = (screen_geometry.height() - self.height()) // 2
-        self.move(x, y)
 
 @app.route('/update')
 def update():
@@ -158,7 +117,6 @@ def index():
     
 @app.route('/start', methods=['POST'])
 def start():
-    
     def validate_nickname(nickname):
         if not nickname:
             return False, "Нікнейм не може бути порожнім."
@@ -193,8 +151,6 @@ def start():
         error_message = traceback.format_exc()
         app.logger.error(error_message) 
         
-
-
 def setup_minecraft(mc_version, fabric_version):
     try:
         src_dir = get_resource_path("game/")
@@ -246,7 +202,7 @@ def launch_minecraft(mc_version, fabric_version, data):
         send_log("Запуск гри...")
 
         def close_window():
-            window.close()
+            window.destroy()
         threading.Timer(20.0, close_window).start()
         subprocess.run(command, cwd=INSTALL_DIR, creationflags=subprocess.CREATE_NO_WINDOW)
     except Exception as e:
@@ -320,7 +276,7 @@ if __name__ == "__main__":
         result = messagebox.askyesno("Оновлення", f"Доступна нова версія {latest_version}. Бажаєте завантажити?")
         
         if result:
-            subprocess.run(['explorer', "https://qqq-craft.top/game"])
+            subprocess.run(['explorer', "https://qqq-craft.top/launcher/qqq-craft.zip"])
             sys.exit(1)
     
     if is_port_in_use(FLASK_PORT):
@@ -329,6 +285,61 @@ if __name__ == "__main__":
 
     threading.Thread(target=run_flask, daemon=True).start()
     threading.Thread(target=run_websocket, daemon=True).start()
-    window = BrowserWindow()
-    window.show()
-    sys.exit(app_qt.exec_())
+    
+    window = webview.create_window(
+        "QQQ - Час стати легендою!",
+        f"http://127.0.0.1:{FLASK_PORT}/",
+        width=1280,
+        height=720,
+        resizable=False
+    )
+
+    webview.start(icon=get_resource_path("static/logo.ico"))
+    
+    
+"""
+
+from PyQt5.QtWidgets import QApplication, QMainWindow, QVBoxLayout, QWidget
+from PyQt5.QtWebEngineWidgets import QWebEngineProfile, QWebEnginePage, QWebEngineView
+from PyQt5.QtGui import QIcon
+from PyQt5.QtCore import QUrl
+
+app_qt = QApplication(sys.argv)
+
+class BrowserWindow(QMainWindow):
+    def __init__(self):
+        global window
+        super().__init__()
+        self.setWindowTitle("QQQ - Час стати легендою!")
+        self.setGeometry(0, 0, 1280, 720)
+        self.setMinimumSize(1280, 720)
+        self.setWindowIcon(QIcon(get_resource_path("static/logo.ico")))
+        
+        cache_path = os.path.join(BASE_DIR, "cache")
+        os.makedirs(cache_path, exist_ok=True)
+
+        self.profile = QWebEngineProfile("QQQProfile", self)
+        self.profile.setCachePath(cache_path)
+        self.profile.setPersistentStoragePath(cache_path)
+
+        self.page = QWebEnginePage(self.profile, self)
+
+        self.browser = QWebEngineView()
+        self.browser.setPage(self.page)
+        self.browser.setUrl(QUrl(f"http://127.0.0.1:{FLASK_PORT}/"))
+
+        layout = QVBoxLayout()
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.addWidget(self.browser)
+        container = QWidget()
+        container.setLayout(layout)
+        self.setCentralWidget(container)
+   
+        self.center_window()
+
+    def center_window(self):
+        screen_geometry = self.screen().geometry()
+        x = (screen_geometry.width() - self.width()) // 2
+        y = (screen_geometry.height() - self.height()) // 2
+        self.move(x, y)
+"""

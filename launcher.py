@@ -276,7 +276,7 @@ if __name__ == "__main__":
         result = messagebox.askyesno("Оновлення", f"Доступна нова версія {latest_version}. Бажаєте завантажити?")
         
         if result:
-            subprocess.run(['explorer', "https://qqq-craft.top/launcher/qqq-craft.zip"])
+            subprocess.run(['explorer', "https://qqq-craft.top/launcher/"])
             sys.exit(1)
     
     if is_port_in_use(FLASK_PORT):

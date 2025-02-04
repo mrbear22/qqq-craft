@@ -72,20 +72,15 @@ VSVersionInfo(
 
     for script in scripts:
         install_command = [
-            '--onefile',
             '--noconsole',
-            '--add-data', f'static{os.pathsep}static',
+            '--contents-directory=.',
+            '--add-data', f'static{os.pathsep}static',  
+            '--add-data', f'templates{os.pathsep}templates',  
+            '--add-data', f'game{os.pathsep}game',  
             '--icon', icon_path,
             '--version-file', version_file,
             f'{script}.py'
         ]
-        
-        if script == "launcher":
-            install_command.append('--add-data')
-            install_command.append(f'templates{os.pathsep}templates')
-            
-            install_command.append('--add-data')
-            install_command.append(f'game{os.pathsep}game')
         
         PyInstaller.__main__.run(install_command)
 
@@ -95,7 +90,7 @@ VSVersionInfo(
             "/f", cert_path,
             "/t", timestamp_url,
             "/fd", "sha256",
-            f'dist/{script}.exe'
+            f'dist/launcher/{script}.exe'
         ]
 
         subprocess.run(sign_command)

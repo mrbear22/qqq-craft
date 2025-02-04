@@ -34,10 +34,9 @@ def get_resource_path(relative_path):
         base_path = os.path.abspath(".")
     return os.path.join(base_path, relative_path)
 
-REPO_API_URL = "https://api.github.com/repos/mrbear22/qqq-craft/releases/latest"
-BASE_DIR = os.path.join(os.environ.get("USERPROFILE", ""), "AppData", "Local", "Programs", "QQQ-CRAFT")
-INSTALL_DIR = os.path.join(BASE_DIR, "GameData")
-USERDATA_FILE = os.path.join(BASE_DIR, "user.json")
+BASE_DIR = os.path.join(os.environ.get("USERPROFILE", ""), "AppData", "Local", "Programs", "qqq-craft")
+INSTALL_DIR = os.path.join(BASE_DIR, "game")
+CONFIG_FILE = os.path.join(BASE_DIR, "static", "data.json")
 
 FLASK_PORT = 7776
 WEBSOCKET_PORT = 8765
@@ -68,7 +67,7 @@ def get_exe_version(path):
 
 def get_latest_version():
     try:
-        response = requests.get(REPO_API_URL)
+        response = requests.get(get_data()["github-repo"])
         if response.status_code == 200:
             return response.json().get("tag_name", "0.0.0.0")
     except requests.RequestException:
@@ -77,7 +76,7 @@ def get_latest_version():
 
 @app.route('/update')
 def update():
-    subprocess.run(['explorer', "https://qqq-craft.top/game"])
+    subprocess.run(['explorer', get_data()["update-url"]])
 
 @app.route('/static/<filename>')
 def static_file(filename):
@@ -91,10 +90,9 @@ def game_folder():
 @app.route("/")
 def index():
     def get_news():
-        json_url = "https://qqq-craft.top/news/?get"
         news = []
         try:
-            response = requests.get(json_url)
+            response = requests.get(get_data()["news-url"])
             response.raise_for_status()
             news = response.json()
             for news_item in news:
@@ -153,14 +151,6 @@ def start():
         
 def setup_minecraft(mc_version, fabric_version):
     try:
-        src_dir = get_resource_path("game/")
-        for item in os.listdir(src_dir):
-            src_item = os.path.join(src_dir, item)
-            dest_item = os.path.join(INSTALL_DIR, item)
-            if os.path.isdir(src_item) and not os.path.exists(dest_item):
-                shutil.copytree(src_item, dest_item)
-            elif os.path.isfile(src_item) and not os.path.exists(dest_item):
-                shutil.copy2(src_item, dest_item)
         send_log(f"Встановлення гри...")
         minecraft_launcher_lib.install.install_minecraft_version(mc_version, INSTALL_DIR)
         send_log("Гру успішно встановлено.")
@@ -173,7 +163,6 @@ def setup_minecraft(mc_version, fabric_version):
         error_message = traceback.format_exc()
         app.logger.error(error_message) 
         
-
 def launch_minecraft(mc_version, fabric_version, data):
     try:
         def generate_offline_uuid(nickname):
@@ -211,15 +200,15 @@ def launch_minecraft(mc_version, fabric_version, data):
     
 def save_data(data):
     try:
-        with open(USERDATA_FILE, 'w') as f:
+        with open(CONFIG_FILE, 'w') as f:
             json.dump(data, f, indent=4)
     except Exception as e:
         error_message = traceback.format_exc()
         app.logger.error(error_message) 
         
 def get_data():
-    if os.path.exists(USERDATA_FILE) and os.path.getsize(USERDATA_FILE) > 0:
-        with open(USERDATA_FILE, 'r') as f:
+    if os.path.exists(CONFIG_FILE) and os.path.getsize(CONFIG_FILE) > 0:
+        with open(CONFIG_FILE, 'r') as f:
             try:
                 return json.load(f)
             except Exception as e:
@@ -256,14 +245,14 @@ def run_websocket():
             connected_clients.remove(websocket)
 
     async def start_websocket_server():
-        server = await websockets.serve(websocket_handler, "127.0.0.1", WEBSOCKET_PORT)
+        server = await websockets.serve(websocket_handler, "localhost", WEBSOCKET_PORT)
         await server.wait_closed()
 
     asyncio.new_event_loop().run_until_complete(start_websocket_server())
 
 def is_port_in_use(port):
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        return s.connect_ex(("127.0.0.1", port)) == 0
+        return s.connect_ex(("localhost", port)) == 0
 
 if __name__ == "__main__":
     
@@ -276,7 +265,7 @@ if __name__ == "__main__":
         result = messagebox.askyesno("Оновлення", f"Доступна нова версія {latest_version}. Бажаєте завантажити?")
         
         if result:
-            subprocess.run(['explorer', "https://qqq-craft.top/launcher/"])
+            subprocess.run(['explorer', get_data()["update-url"]])
             sys.exit(1)
     
     if is_port_in_use(FLASK_PORT):
@@ -288,58 +277,10 @@ if __name__ == "__main__":
     
     window = webview.create_window(
         "QQQ - Час стати легендою!",
-        f"http://127.0.0.1:{FLASK_PORT}/",
+        f"http://localhost:{FLASK_PORT}/",
         width=1280,
         height=720,
         resizable=False
     )
 
     webview.start(icon=get_resource_path("static/logo.ico"))
-    
-    
-"""
-
-from PyQt5.QtWidgets import QApplication, QMainWindow, QVBoxLayout, QWidget
-from PyQt5.QtWebEngineWidgets import QWebEngineProfile, QWebEnginePage, QWebEngineView
-from PyQt5.QtGui import QIcon
-from PyQt5.QtCore import QUrl
-
-app_qt = QApplication(sys.argv)
-
-class BrowserWindow(QMainWindow):
-    def __init__(self):
-        global window
-        super().__init__()
-        self.setWindowTitle("QQQ - Час стати легендою!")
-        self.setGeometry(0, 0, 1280, 720)
-        self.setMinimumSize(1280, 720)
-        self.setWindowIcon(QIcon(get_resource_path("static/logo.ico")))
-        
-        cache_path = os.path.join(BASE_DIR, "cache")
-        os.makedirs(cache_path, exist_ok=True)
-
-        self.profile = QWebEngineProfile("QQQProfile", self)
-        self.profile.setCachePath(cache_path)
-        self.profile.setPersistentStoragePath(cache_path)
-
-        self.page = QWebEnginePage(self.profile, self)
-
-        self.browser = QWebEngineView()
-        self.browser.setPage(self.page)
-        self.browser.setUrl(QUrl(f"http://127.0.0.1:{FLASK_PORT}/"))
-
-        layout = QVBoxLayout()
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.addWidget(self.browser)
-        container = QWidget()
-        container.setLayout(layout)
-        self.setCentralWidget(container)
-   
-        self.center_window()
-
-    def center_window(self):
-        screen_geometry = self.screen().geometry()
-        x = (screen_geometry.width() - self.width()) // 2
-        y = (screen_geometry.height() - self.height()) // 2
-        self.move(x, y)
-"""

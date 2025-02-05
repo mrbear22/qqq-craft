@@ -79,6 +79,12 @@
 				<details>
 					<summary>Параметри</summary>
 					<div class="settings">
+						<label for="loader">Завантажувач:</label>
+						<select name="loader" class="input" id="loader">
+							<option value="fabric" {% if data and data.loader == 'fabric' %} selected {% endif %}>Fabric</option>
+							<option value="forge" {% if data and data.loader == 'forge' %} selected {% endif %}>Forge</option>
+							<option value="vanilla" {% if data and data.loader == 'vanilla' %} selected {% endif %}>Vanilla</option>
+						</select><br>
 						<label for="ram">Оперативна пам'ять:</label>
 						<select name="ram" class="input" id="ram">
 							<option value="2G" {% if data and data.ram == '2G' %} selected {% endif %}>2GB</option>
@@ -91,7 +97,7 @@
 							<option value="1920x1080" {% if data and data.windowSize == '1920x1080' %} selected {% endif %}>1920x1080</option>
 						</select><br>
 						<div>
-							<label for="multiplayer">Вхід на сервер:</label>
+							<label for="multiplayer">Вхід на сервер:
 							<input type="checkbox" id="multiplayer" name="multiplayer"
 								{% if data and data|length > 0 %}
 									{% if data.multiplayer == true %}
@@ -99,22 +105,34 @@
 									{% endif %}
 								{% else %}
 									checked
-								{% endif %}>
+								{% endif %}></label>
+						</div>
+						<div>
+							<label for="console">Консоль:
+							<input type="checkbox" id="console" name="console"
+								{% if data and data|length > 0 %}
+									{% if data.console == true %}
+										checked
+									{% endif %}
+								{% else %}
+									checked
+								{% endif %}></label>
 						</div>
 						<div>
 						<!--	<label for="fullscreen">Повноекранний режим:</label>
 							<input type="checkbox" id="fullscreen" name="fullscreen" 
 								{% if data and data.fullscreen %} checked {% endif %}> -->
 						</div>
-						<a href="#" onclick="fetch('/game_folder')">📂 Папка гри</a>
-					</div>
+						<div>
+							<a href="#" onclick="fetch('/game_folder')">📂 Папка гри</a>
+						</div><br>
+					</div><br>
 				</details>
-				<div id="log-box" style="padding: 10px; overflow-y: auto;">
+				<div id="log-box" style="padding: 10px;">
 					<div id="logs"></div>
 				</div>
 				<button type="submit" class="button" id="start">До гри ⚔️</button>
 				
-				<br>
 				{% if is_latest_version == False %}
 					<div id="update">Доступна нова версія лаунчера! Будь ласка, завантажте її <u><a href="#" onclick="fetch('/update')">тут</a></u></div>
 				{% endif %}
@@ -140,9 +158,11 @@
 				const payload = {
 					nickname: $('#nickname').val(),
 					ram: $('#ram').val(),
+					loader: $('#loader').val(),
 					windowSize: $('#windowSize').val(),
 					multiplayer: $('#multiplayer').is(':checked'),
-					fullscreen: $('#fullscreen').is(':checked')
+					fullscreen: $('#fullscreen').is(':checked'),
+					console: $('#console').is(':checked')
 				};
 				$(this).prop('disabled', true);
 				fetch('/start', {

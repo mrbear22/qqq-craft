@@ -39,6 +39,10 @@ img {
     pointer-events: none;
 }
 
+input[type="checkbox"] {
+    float: right;
+}
+
 /* == ЗАГОЛОВКИ == */
 .news h1 {
     color: #f8f0e3;
@@ -228,13 +232,12 @@ input, select, textarea {
 /* == НАЛАШТУВАННЯ == */
 .settings {
     padding: 10px;
-    overflow-y: auto;
-    max-height: 250px;
+    max-height: 200px;
 }
 
 details {
     width: 100%;
-    max-height: 250px;
+    max-height: 200px;
     background: #f8f0e3;
     border-radius: 10px;
     border: 2px solid #a57c55;

@@ -73,10 +73,15 @@ VSVersionInfo(
     for script in scripts:
         install_command = [
             '--noconsole',
+            '--clean',
+            '--noupx',
+            '--noconfirm',
             '--contents-directory=.',
             '--add-data', f'static{os.pathsep}static',  
             '--add-data', f'templates{os.pathsep}templates',  
-            '--add-data', f'game{os.pathsep}game',  
+            '--add-data', f'fabric{os.pathsep}fabric',  
+            '--add-data', f'forge{os.pathsep}forge',  
+            '--add-data', f'vanilla{os.pathsep}vanilla',  
             '--icon', icon_path,
             '--version-file', version_file,
             f'{script}.py'

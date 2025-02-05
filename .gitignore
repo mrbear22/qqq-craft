@@ -14,7 +14,9 @@ vendor/
 
 /dist/
 /build/
-/game/
+fabric/*
+forge/*
+vanilla/*
 /out/
 *.exe
 *.dll

@@ -210,7 +210,7 @@ def launch_minecraft(mc_version, loader, data):
             send_log(f"Запуск гри...")
 
             if loader == "fabric":
-                fabric_version = "0.16.10"
+                fabric_version = "0.16.14"
                 command = minecraft_launcher_lib.command.get_minecraft_command(f"fabric-loader-{fabric_version}-{mc_version}", INSTALL_DIR, options)
             elif loader == "forge":
                 forge_version = "52.0.47"

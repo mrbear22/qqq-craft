@@ -1,3 +1,11 @@
+import platform
+import os
+import sys
+
+VERSION = "1.0.19.0"
+IS_WINDOWS = os.name == "nt"
+IS_LINUX = sys.platform.startswith("linux")
+
 from flask import Flask, render_template, request, jsonify, send_from_directory
 from tkinter import messagebox
 import minecraft_launcher_lib
@@ -8,15 +16,12 @@ import subprocess
 import threading
 import traceback
 import markdown
-import win32api
 import requests
 import webview
 import asyncio
 import socket
 import json
 import uuid
-import sys
-import os
 import re
 
 def show_message(title, message):
@@ -25,7 +30,13 @@ def show_message(title, message):
     messagebox.showinfo(title, message)
     root.destroy()
 
-BASE_DIR = os.path.join(os.environ.get("USERPROFILE", ""), "AppData", "Local", "Programs", "qqq-craft")
+if IS_WINDOWS:
+    BASE_DIR = os.path.join(os.environ.get("USERPROFILE", ""), "AppData", "Local", "Programs", "qqq-craft")
+elif IS_LINUX:
+    BASE_DIR = os.path.join(os.environ.get("HOME", ""), ".local", "share", "qqq-craft")
+else:
+    raise OSError("Unsupported OS")
+
 
 def save_data(data, file_name):
     try:
@@ -55,18 +66,6 @@ WEBSOCKET_PORT = 8765
 app = Flask(__name__)
 connected_clients = set()
 window = None
-
-def get_exe_version(path):
-    try:
-        app.logger.info(f"Getting version for {path}")
-        info = win32api.GetFileVersionInfo(path, "\\")
-        ms = info['FileVersionMS']
-        ls = info['FileVersionLS']
-        version = f"{win32api.HIWORD(ms)}.{win32api.LOWORD(ms)}.{win32api.HIWORD(ls)}.{win32api.LOWORD(ls)}"
-        app.logger.info(f"Found version: {version}")
-        return version
-    except:
-        return "0.0.0.0"
 
 def get_latest_version():
     try:
@@ -107,9 +106,8 @@ def index():
             return {}
     
     def is_latest_version():  
-        local_version = get_exe_version(os.path.join(BASE_DIR, "launcher.exe"))
         latest_version = get_latest_version()
-        return version.parse(local_version) >= version.parse(latest_version)
+        return version.parse(VERSION) >= version.parse(latest_version)
 
     return render_template("index.html", news=get_news(), data=get_data("user.json"), is_latest_version=is_latest_version()) 
     
@@ -148,43 +146,73 @@ def start():
     except:
         show_message("Який жах!", f"Сталась помилка. Покажіть дане повідомлення адміністрації сервера: \n{traceback.format_exc()}")
         
+import time
+
+def create_progress_callback():
+    last_logged_percent = {"value": -1}
+    max_progress = {"value": 0}
+    last_update_time = {"value": time.time()}
+    debounce_interval = 1
+
+    def set_status(text):
+        print(f"{text}")
+
+    def set_progress(step):
+        if max_progress["value"] > 0:
+            percent = int(step / max_progress["value"] * 100)
+            current_time = time.time()
+            if percent != last_logged_percent["value"] and current_time - last_update_time["value"] > debounce_interval:
+                send_log(f"Підготовка гри: {percent}%")
+                last_logged_percent["value"] = percent
+                last_update_time["value"] = current_time
+
+    def set_max(max_value):
+        max_progress["value"] = max_value
+
+    return {
+        "setStatus": set_status,
+        "setProgress": set_progress,
+        "setMax": set_max,
+    }
+
+
 def setup_minecraft(mc_version, loader):
     global INSTALL_DIR
     try:
         if loader == "fabric":
             INSTALL_DIR = os.path.join(BASE_DIR, "fabric")
-            fabric_version = "0.16.10"
-            fabric_folder_path = os.path.join(INSTALL_DIR, "versions", f"fabric-loader-{fabric_version}-{mc_version}")
-            if not os.path.exists(fabric_folder_path):
-                send_log("Встановлення Fabric...")
-                minecraft_launcher_lib.fabric.install_fabric(mc_version, INSTALL_DIR)
-
+            minecraft_launcher_lib.fabric.install_fabric(
+                mc_version,
+                INSTALL_DIR,
+                callback=create_progress_callback()
+            )
         elif loader == "forge":
             INSTALL_DIR = os.path.join(BASE_DIR, "forge")
-            forge_version = minecraft_launcher_lib.forge.find_forge_version("1.21.1")
-            forge_folder_path = os.path.join(INSTALL_DIR, "versions", f"{mc_version}-forge-52.0.47")
-            if not os.path.exists(forge_folder_path):
-                send_log("Встановлення Forge...")
-                minecraft_launcher_lib.forge.install_forge_version(forge_version, INSTALL_DIR)
-
+            forge_version = minecraft_launcher_lib.forge.find_forge_version(mc_version)
+            minecraft_launcher_lib.forge.install_forge_version(
+                forge_version,
+                INSTALL_DIR,
+                callback=create_progress_callback()
+            )
         elif loader == "vanilla":
             INSTALL_DIR = os.path.join(BASE_DIR, "vanilla")
-            if not os.path.exists(os.path.join(INSTALL_DIR, "versions", mc_version)):
-                send_log("Встановлення Vanilla...")
-                minecraft_launcher_lib.forge.install_minecraft_version(mc_version, INSTALL_DIR)
-                
+            minecraft_launcher_lib.install.install_minecraft_version(
+                mc_version,
+                INSTALL_DIR,
+                callback=create_progress_callback()
+            )
         send_log("Гру успішно встановлено.")
-
-    except:
+    except Exception:
         show_message("Який жах!", f"Сталась помилка. Покажіть дане повідомлення адміністрації сервера: \n{traceback.format_exc()}")
+
 
 def launch_minecraft(mc_version, loader, data):
     try:
         def generate_offline_uuid(nickname):
-            namespace = uuid.UUID('00000000-0000-0000-0000-000000000000') 
+            namespace = uuid.UUID('00000000-0000-0000-0000-000000000000')
             return uuid.uuid3(namespace, "OfflinePlayer:" + nickname)
 
-        send_log("Підготовка до запуску гри...")
+        send_log("Підготовка до запуску гри")
 
         nickname = data.get('nickname')
         width, height = data.get('windowSize', '1024x768').split('x')
@@ -207,33 +235,37 @@ def launch_minecraft(mc_version, loader, data):
             window.destroy()
 
         try:
-            send_log(f"Запуск гри...")
+            send_log(f"Запуск гри")
 
             if loader == "fabric":
-                fabric_version = "0.16.14"
-                command = minecraft_launcher_lib.command.get_minecraft_command(f"fabric-loader-{fabric_version}-{mc_version}", INSTALL_DIR, options)
+                fabric_loader_version = minecraft_launcher_lib.fabric.get_latest_loader_version()
+                version_id = f"fabric-loader-{fabric_loader_version}-{mc_version}"
             elif loader == "forge":
-                forge_version = "52.0.47"
-                command = minecraft_launcher_lib.command.get_minecraft_command(f"{mc_version}-forge-{forge_version}", INSTALL_DIR, options)
+                forge_version = minecraft_launcher_lib.forge.find_forge_version(mc_version)
+                version_id = f"{mc_version}-forge-{forge_version}"
             elif loader == "vanilla":
-                command = minecraft_launcher_lib.command.get_minecraft_command(mc_version, INSTALL_DIR, options)
+                version_id = mc_version
+
+            command = minecraft_launcher_lib.command.get_minecraft_command(version_id, INSTALL_DIR, options)
 
             threading.Timer(20.0, close_window).start()
             if data.get('console', False):
                 subprocess.run(command, cwd=INSTALL_DIR, check=True)
             else:
                 subprocess.run(command, cwd=INSTALL_DIR, check=True, creationflags=subprocess.CREATE_NO_WINDOW)
-                
+
         except Exception as e:
             show_message("Який жах!", f"Помилка запуску гри ({loader}): {str(e)}")
 
     except:
         show_message("Який жах!", f"Сталась помилка. Покажіть дане повідомлення адміністрації сервера: \n{traceback.format_exc()}")
+
     
 def send_log(message):
     global connected_clients
     if connected_clients:
-        for client in connected_clients:
+        clients_to_notify = list(connected_clients)
+        for client in clients_to_notify:
             try:
                 asyncio.run(client.send(message))
             except:
@@ -268,10 +300,9 @@ def is_port_in_use(port):
 
 if __name__ == "__main__":
     
-    local_version = get_exe_version(os.path.join(BASE_DIR, "launcher.exe"))
     latest_version = get_latest_version()
 
-    if version.parse(local_version) < version.parse(latest_version):
+    if version.parse(VERSION) < version.parse(latest_version):
         root = tk.Tk()
         root.withdraw()
         result = messagebox.askyesno("Оновлення", f"Доступна нова версія {latest_version}. Бажаєте завантажити?")

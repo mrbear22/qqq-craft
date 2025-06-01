@@ -141,20 +141,47 @@
 		</div>
 	</div>
 	<script>
-	
+		let loading = false;
+
 		function appendLog(message) {
 			const logs = document.getElementById("logs");
+			const entry = document.createElement("div");
 			logs.innerHTML = '';
-			const logEntry = document.createElement("div");
-			logEntry.textContent = message;
-			logs.appendChild(logEntry);
+			entry.textContent = message;
+
+			if (loading) {
+				const span = document.createElement("span");
+				span.className = "loading-dots";
+				entry.appendChild(span);
+			}
+
+			logs.appendChild(entry);
 			logs.scrollTop = logs.scrollHeight;
+		}
+
+		function setLoading(state) {
+			loading = state;
+
+			const oldDots = document.querySelectorAll(".loading-dots");
+			oldDots.forEach(dot => dot.remove());
+
+			if (loading) {
+				const logs = document.getElementById("logs");
+				const last = logs.lastElementChild;
+				if (last) {
+					const span = document.createElement("span");
+					span.className = "loading-dots";
+					last.appendChild(span);
+				}
+			}
 		}
 	
 		$(document).ready(function () {
 			document.addEventListener('contextmenu', event => event.preventDefault());
+
 			$('#start').click(function (event) {
 				event.preventDefault();
+				loadingAnimation = true;
 				const payload = {
 					nickname: $('#nickname').val(),
 					ram: $('#ram').val(),
@@ -164,7 +191,9 @@
 					fullscreen: $('#fullscreen').is(':checked'),
 					console: $('#console').is(':checked')
 				};
-				$(this).prop('disabled', true);
+
+				$('#start').prop('disabled', true);
+				setLoading(true)
 				fetch('/start', {
 					method: 'POST',
 					headers: { 'Content-Type': 'application/json' },
@@ -173,9 +202,11 @@
 					.then(response => response.json())
 					.then(data => appendLog(data.success ? "Процес гри завершився." : `${data.error}`))
 					.catch(error => appendLog(`Виникла помилка: ${error.message}`))
-					.finally(() => $('#start').prop('disabled', false));
+					.finally(() => {
+						$('#start').prop('disabled', false);
+						setLoading(false)
+					});
 			});
-
 		});
 		
 		const logsDiv = document.getElementById("logs");

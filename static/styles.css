@@ -354,3 +354,17 @@ label {
     background-color: #7B3F00;
     box-shadow: 0 2px 0 #4B2D0B;
 }
+
+.loading-dots::after {
+  content: '';
+  display: inline-block;
+  width: 1em;
+  animation: dots 1s steps(3, end) infinite;
+}
+
+@keyframes dots {
+  0%   { content: ''; }
+  33%  { content: '.'; }
+  66%  { content: '..'; }
+  100% { content: '...'; }
+}

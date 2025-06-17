@@ -72,7 +72,7 @@
 		<div class="login-panel"><br>
 			<img src="/static/logo.png" width="100px" /><br>
 			<h1>Вхід</h1>
-			<form action="/start" method="post">
+			<form method="post">
 				<label for="nickname">Ваш нікнейм:</label>
 				<input type="text" id="nickname" class="input" placeholder="Joseph" name="nickname" 
 					{% if data and data.nickname %} value="{{ data.nickname }}" {% endif %}><br>
@@ -124,14 +124,14 @@
 								{% if data and data.fullscreen %} checked {% endif %}> -->
 						</div>
 						<div>
-							<a href="#" onclick="fetch('/game_folder')">📂 Папка гри</a>
+							<a href="#" onclick="openGameFolder()">📂 Папка гри</a>
 						</div><br>
 					</div><br>
 				</details>
 				<div id="log-box" style="padding: 10px;">
 					<div id="logs"></div>
 				</div>
-				<button type="submit" class="button" id="start">До гри ⚔️</button>
+				<button type="submit" class="button" id="start" formaction="/start">До гри ⚔️</button>
 				
 				{% if is_latest_version == False %}
 					<div id="update">Доступна нова версія лаунчера! Будь ласка, завантажте її <u><a href="#" onclick="fetch('/update')">тут</a></u></div>
@@ -175,7 +175,31 @@
 				}
 			}
 		}
-	
+		
+		function openGameFolder() {
+			const form = document.querySelector("form");
+			const formData = new FormData(form);
+
+			fetch('/game_folder', {
+				method: 'POST',
+				body: formData
+			})
+			.then(res => res.json())
+			.then(data => {
+				if (data.success) {
+					console.log("Папку відкрито");
+					// Можеш показати повідомлення в DOM або просто залишити без нічого
+				} else {
+					console.error("Помилка:", data.error);
+					alert("❌ " + data.error);
+				}
+			})
+			.catch(err => {
+				console.error("Fetch error:", err);
+				alert("⚠️ Не вдалося надіслати запит");
+			});
+		}
+
 		$(document).ready(function () {
 			document.addEventListener('contextmenu', event => event.preventDefault());
 

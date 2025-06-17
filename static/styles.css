@@ -218,15 +218,23 @@ input, select, textarea {
 
 /* == СЕКЦІЯ КОМЕНТАРІВ == */
 .comments {
-    margin-top: 15px;
-    font-size: 0.9em;
-    color: #4b2e2a;
+	margin-top: 20px;
+	padding-top: 15px;
+	border-top: 2px dashed #a57c55;
+}
+
+.comments h4 {
+	color: #4b2e2a;
+	margin-bottom: 10px;
 }
 
 .comment {
-    margin-bottom: 10px;
-    border-bottom: 1px dashed #ccc;
-    padding-bottom: 5px;
+	margin-bottom: 12px;
+	padding: 8px 12px;
+	background: rgba(248, 240, 227, 0.6);
+	border-radius: 8px;
+	border-left: 4px solid #8b4513;
+	font-size: 0.9em;
 }
 
 /* == НАЛАШТУВАННЯ == */

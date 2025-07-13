@@ -2,8 +2,10 @@ Flask==3.1.0
 PyQt5==5.15.11
 PyQtWebEngine==5.15.7
 minecraft-launcher-lib==7.1
+minecraft_launcher_lib
 websockets==14.2
 Markdown==3.7
 packaging==24.2
 pyinstaller==6.11.1
-pywin32==308
+requests
+pywebview

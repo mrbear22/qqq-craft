@@ -8,6 +8,7 @@ import sys
 import json
 import uuid
 import time
+import shutil
 import logging
 import platform
 import threading
@@ -29,7 +30,7 @@ import asyncio
 import markdown
 
 # Configuration
-VERSION = "1.0.20.0"
+VERSION = "1.0.21.0"
 FLASK_PORT = 7776
 WEBSOCKET_PORT = 8765
 MC_VERSION = "1.21.1"
@@ -181,7 +182,7 @@ class MinecraftInstaller:
                 max_progress = max_val
             
             return {
-                "setStatus": set_status,
+            #    "setStatus": set_status,
                 "setProgress": set_progress,
                 "setMax": set_max
             }
@@ -245,7 +246,7 @@ class MinecraftLauncher:
                 
     def launch(self, config: Config, progress_callback=None) -> bool:
         try:
-            copy_resources(self, config)
+            self.copy_resources(config)
             
             install_dir = self.path_manager.get_install_dir(config.loader)
             
@@ -529,7 +530,7 @@ class Application:
             threading.Thread(target=self.run_flask, daemon=True).start()
             threading.Thread(target=self.run_websocket, daemon=True).start()
             self.window = webview.create_window(
-                "QQQ - Час стати легендою!",
+                f"QQQ - Час стати легендою! (BETA ВЕРСІЯ {VERSION})",
                 f"http://127.0.0.1:{FLASK_PORT}/",
                 width=1280,
                 height=720,

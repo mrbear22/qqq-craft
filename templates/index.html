@@ -82,7 +82,7 @@
 						<label for="loader">Завантажувач:</label>
 						<select name="loader" class="input" id="loader">
 							<option value="fabric" {% if data and data.loader == 'fabric' %} selected {% endif %}>Fabric</option>
-							<option value="forge" {% if data and data.loader == 'forge' %} selected {% endif %}>Forge</option>
+						<!--	<option value="forge" {% if data and data.loader == 'forge' %} selected {% endif %}>Forge</option> -->
 							<option value="vanilla" {% if data and data.loader == 'vanilla' %} selected {% endif %}>Vanilla</option>
 						</select><br>
 						<label for="ram">Оперативна пам'ять:</label>
@@ -142,6 +142,7 @@
 	</div>
 	<script>
 		let loading = false;
+		let gameRunning = false;
 
 		function appendLog(message) {
 			const logs = document.getElementById("logs");
@@ -161,6 +162,15 @@
 
 		function setLoading(state) {
 			loading = state;
+			const startButton = document.getElementById("start");
+			
+			if (state) {
+				startButton.disabled = true;
+				startButton.textContent = "Запуск...";
+			} else if (!gameRunning) {
+				startButton.disabled = false;
+				startButton.textContent = "До гри ⚔️";
+			}
 
 			const oldDots = document.querySelectorAll(".loading-dots");
 			oldDots.forEach(dot => dot.remove());
@@ -173,6 +183,19 @@
 					span.className = "loading-dots";
 					last.appendChild(span);
 				}
+			}
+		}
+
+		function setGameRunning(state) {
+			gameRunning = state;
+			const startButton = document.getElementById("start");
+			
+			if (state) {
+				startButton.disabled = true;
+				startButton.textContent = "Запуск...";
+			} else {
+				startButton.disabled = false;
+				startButton.textContent = "До гри ⚔️";
 			}
 		}
 		
@@ -188,7 +211,6 @@
 			.then(data => {
 				if (data.success) {
 					console.log("Папку відкрито");
-					// Можеш показати повідомлення в DOM або просто залишити без нічого
 				} else {
 					console.error("Помилка:", data.error);
 					alert("❌ " + data.error);
@@ -205,7 +227,12 @@
 
 			$('#start').click(function (event) {
 				event.preventDefault();
-				loadingAnimation = true;
+				
+				if (this.disabled) {
+					console.log('Кнопка відключена, клік ігнорується');
+					return false;
+				}
+				
 				const payload = {
 					nickname: $('#nickname').val(),
 					ram: $('#ram').val(),
@@ -216,20 +243,27 @@
 					console: $('#console').is(':checked')
 				};
 
-				$('#start').prop('disabled', true);
-				setLoading(true)
+				setLoading(true);
+				
 				fetch('/start', {
 					method: 'POST',
 					headers: { 'Content-Type': 'application/json' },
 					body: JSON.stringify(payload)
 				})
-					.then(response => response.json())
-					.then(data => appendLog(data.success ? "Процес гри завершився." : `${data.error}`))
-					.catch(error => appendLog(`Виникла помилка: ${error.message}`))
-					.finally(() => {
-						$('#start').prop('disabled', false);
-						setLoading(false)
-					});
+				.then(response => response.json())
+				.then(data => {
+					if (data.success) {
+						setGameRunning(true);
+						appendLog("");
+					} else {
+						setLoading(false);
+						appendLog(`Помилка: ${data.error}`);
+					}
+				})
+				.catch(error => {
+					setLoading(false);
+					appendLog(`Виникла помилка: ${error.message}`);
+				});
 			});
 		});
 		
@@ -237,7 +271,14 @@
 		const socket = new WebSocket("ws://127.0.0.1:8765");
 
 		socket.onmessage = function (event) {
-			appendLog(event.data);
+			const message = event.data;
+			appendLog(message);
+			
+			// Перевіряємо чи гра завершилась
+			if (message.includes("Гра завершена") || message.includes("Процес завершено")) {
+				setGameRunning(false);
+				setLoading(false);
+			}
 		};
 
 		socket.onopen = function () {

@@ -1,5 +1,6 @@
 {
 	"github-repo": "https://api.github.com/repos/mrbear22/qqq-craft/releases/latest",
 	"update-url": "https://qqq-craft.top/game",
-	"news-url": "https://qqq-craft.top/news/?get"
+	"news-url": "https://qqq-craft.top/news/?get",
+	"modpacks-url": "https://qqq-craft.top/launcher/get/"
 }

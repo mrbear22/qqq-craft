@@ -81,9 +81,9 @@
 					<div class="settings">
 						<label for="loader">Завантажувач:</label>
 						<select name="loader" class="input" id="loader">
-							<option value="fabric" {% if data and data.loader == 'fabric' %} selected {% endif %}>Fabric</option>
+							<option value="fabric-loader-0.16.14-1.21.1" {% if data and data.loader == 'fabric-loader-0.16.14-1.21.1' %} selected {% endif %}>Fabric</option>
 						<!--	<option value="forge" {% if data and data.loader == 'forge' %} selected {% endif %}>Forge</option> -->
-							<option value="vanilla" {% if data and data.loader == 'vanilla' %} selected {% endif %}>Vanilla</option>
+							<option value="1.21.1" {% if data and data.loader == '1.21.1' %} selected {% endif %}>Vanilla</option>
 						</select><br>
 						<label for="ram">Оперативна пам'ять:</label>
 						<select name="ram" class="input" id="ram">
@@ -212,7 +212,7 @@
 				if (data.success) {
 					console.log("Папку відкрито");
 				} else {
-					console.error("Помилка:", data.error);
+					console.error(data.error);
 					alert("❌ " + data.error);
 				}
 			})
@@ -257,7 +257,7 @@
 						appendLog("");
 					} else {
 						setLoading(false);
-						appendLog(`Помилка: ${data.error}`);
+						appendLog(`${data.error}`);
 					}
 				})
 				.catch(error => {
@@ -268,7 +268,7 @@
 		});
 		
 		const logsDiv = document.getElementById("logs");
-		const socket = new WebSocket("ws://127.0.0.1:8765");
+		const socket = new WebSocket("ws://127.0.0.1:5263");
 
 		socket.onmessage = function (event) {
 			const message = event.data;

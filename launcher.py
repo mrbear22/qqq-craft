@@ -1,26 +1,28 @@
 #!/usr/bin/env python3
 """
-QQQ-CRAFT LAUNCHER
+QQQ-CRAFT LAUNCHER WITH ERROR HANDLING
 """
 
 import os
+import re
 import sys
 import json
 import uuid
 import time
 import shutil
+import hashlib
 import logging
 import platform
 import threading
 import subprocess
+import traceback
 from pathlib import Path
 from typing import Dict, Optional, Tuple, Any
 from dataclasses import dataclass, asdict
 
-# Third-party imports
 import requests
 from flask import Flask, render_template, request, jsonify, send_from_directory
-from tkinter import messagebox
+from tkinter import messagebox, scrolledtext
 from packaging import version
 import minecraft_launcher_lib
 import tkinter as tk
@@ -29,18 +31,53 @@ import websockets
 import asyncio
 import markdown
 
-# Configuration
-VERSION = "1.0.21.0"
-FLASK_PORT = 7776
-WEBSOCKET_PORT = 8765
-MC_VERSION = "1.21.1"
+VERSION = "1.0.22.0"
+FLASK_PORT = 6724
+WEBSOCKET_PORT = 5263
 
-# Platform detection
 IS_WINDOWS = platform.system() == "Windows"
 IS_LINUX = platform.system() == "Linux"
 
 if not (IS_WINDOWS or IS_LINUX):
     raise OSError(f"Unsupported platform: {platform.system()}")
+
+class ErrorHandler:
+
+    @staticmethod
+    def show_error_dialog(error_message: str, error_details: str = None):
+        try:
+            root = tk.Tk()
+            root.withdraw()  # не показуємо основне вікно
+
+            full_error = (
+                f"Версія лаунчера: {VERSION}\n"
+                f"ОС: {platform.system()} {platform.release()}\n"
+                f"Час: {time.strftime('%Y-%m-%d %H:%M:%S')}\n"
+                f"{'-'*40}\n"
+                f"{error_message}"
+            )
+
+            if error_details:
+                full_error += f"\n\nДеталі:\n{error_details}"
+
+            messagebox.showerror("QQQ-CRAFT — Помилка", full_error)
+
+        except Exception as e:
+            print("КРИТИЧНА ПОМИЛКА:", error_message)
+            print("ДЕТАЛІ:", error_details)
+            print("Помилка створення діалогу:", e)
+
+    @staticmethod
+    def handle_exception(exc_type, exc_value, exc_traceback):
+        if issubclass(exc_type, KeyboardInterrupt):
+            sys.__excepthook__(exc_type, exc_value, exc_traceback)
+            return
+
+        error_message = str(exc_value)
+        error_details = ''.join(traceback.format_exception(exc_type, exc_value, exc_traceback))
+        ErrorHandler.show_error_dialog(error_message, error_details)
+
+sys.excepthook = ErrorHandler.handle_exception
 
 @dataclass
 class Config:
@@ -54,17 +91,24 @@ class Config:
 
 class PathManager:
     def __init__(self):
-        self.home = Path.home()
-        if IS_WINDOWS:
-            self.base_dir = self.home / "AppData" / "Local" / "Programs" / "qqq-craft"
-        else:  # Linux
-            self.base_dir = self.home / ".local" / "share" / "qqq-craft"
-        
-        self.base_dir.mkdir(parents=True, exist_ok=True)
-        (self.base_dir / "static").mkdir(exist_ok=True)
+        try:
+            self.home = Path.home()
+            if IS_WINDOWS:
+                self.base_dir = self.home / "AppData" / "Local" / "Programs" / "qqq-craft"
+            else:  # Linux
+                self.base_dir = self.home / ".local" / "share" / "qqq-craft"
+            
+            self.base_dir.mkdir(parents=True, exist_ok=True)
+            (self.base_dir / "static").mkdir(exist_ok=True)
+        except Exception as e:
+            ErrorHandler.show_error_dialog(
+                "Помилка ініціалізації PathManager",
+                f"Не вдалося створити необхідні папки: {e}"
+            )
+            raise
     
     def get_install_dir(self, loader: str) -> Path:
-        return self.base_dir / loader
+        return self.base_dir / "instances" / loader
 
 class DataManager:
     def __init__(self, path_manager: PathManager):
@@ -79,6 +123,10 @@ class DataManager:
             return True
         except Exception as e:
             self.logger.error(f"Failed to save {filename}: {e}")
+            ErrorHandler.show_error_dialog(
+                f"Помилка збереження файлу {filename}",
+                str(e)
+            )
             return False
     
     def load(self, filename: str) -> Dict:
@@ -89,138 +137,74 @@ class DataManager:
                     return json.load(f)
         except Exception as e:
             self.logger.error(f"Failed to load {filename}: {e}")
+            ErrorHandler.show_error_dialog(
+                f"Помилка завантаження файлу {filename}",
+                str(e)
+            )
         return {}
 
 class Validator:
     @staticmethod
     def validate_nickname(nickname: str) -> Tuple[bool, str]:
-        if not nickname or not nickname.strip():
-            return False, "Нікнейм не може бути порожнім"
-        
-        nickname = nickname.strip()
-        if not (3 <= len(nickname) <= 16):
-            return False, "Нікнейм повинен бути від 3 до 16 символів"
-        
-        if not nickname.replace('_', '').replace('-', '').isalnum():
-            return False, "Нікнейм може містити лише літери, цифри, дефіс або підкреслення"
-        
-        forbidden = {'admin', 'moderator', 'staff', 'banned', 'owner'}
-        if nickname.lower() in forbidden:
-            return False, "Нікнейм містить заборонені слова"
-        
-        return True, "OK"
+        try:
+            if not nickname or not nickname.strip():
+                return False, "Нікнейм не може бути порожнім"
+            
+            nickname = nickname.strip()
+            if not (3 <= len(nickname) <= 16):
+                return False, "Нікнейм повинен бути від 3 до 16 символів"
+            
+            # Перевірка тільки на латинські літери, цифри, дефіс і підкреслення
+            if not re.fullmatch(r'[A-Za-z0-9_-]+', nickname):
+                return False, "Нікнейм може містити лише англійські літери, цифри, дефіс або підкреслення"
+            
+            forbidden = {'admin', 'moderator', 'staff', 'banned', 'owner'}
+            if nickname.lower() in forbidden:
+                return False, "Нікнейм містить заборонені слова"
+            
+            return True, "OK"
+        except Exception as e:
+            ErrorHandler.show_error_dialog(
+                "Помилка валідації нікнейму",
+                str(e)
+            )
+            return False, "Помилка валідації"
     
     @staticmethod
     def validate_config(data: Dict) -> Tuple[bool, str, Optional[Config]]:
-        # Validate nickname
-        is_valid, message = Validator.validate_nickname(data.get('nickname', ''))
-        if not is_valid:
-            return False, message, None
-        
-        # Validate loader
-        loader = data.get('loader', 'fabric')
-        if loader not in ['fabric', 'forge', 'vanilla']:
-            loader = 'fabric'
-        
-        # Validate RAM
-        ram = data.get('ram', '4G')
-        if ram not in ['2G', '4G', '8G', '16G']:
-            ram = '4G'
-        
-        # Validate window size
-        window_size = data.get('windowSize', '1280x720')
-        valid_sizes = ['1280x720', '1920x1080', '1366x768', '1600x900']
-        if window_size not in valid_sizes:
-            window_size = '1280x720'
-        
-        config = Config(
-            nickname=data.get('nickname', '').strip(),
-            loader=loader,
-            ram=ram,
-            window_size=window_size,
-            multiplayer=bool(data.get('multiplayer', True)),
-            console=bool(data.get('console', False)),
-            fullscreen=bool(data.get('fullscreen', False))
-        )
-        
-        return True, "OK", config
-
-class MinecraftInstaller:
-    def __init__(self, path_manager: PathManager):
-        self.path_manager = path_manager
-        self.logger = logging.getLogger(__name__)
-        self.progress_callback = None
-    
-    def set_progress_callback(self, callback):
-        self.progress_callback = callback
-    
-    def _create_callback(self):
-        last_percent = -1
-        last_time = time.time()
-        
-        def callback_wrapper():
-            max_progress = 0
-            
-            def set_status(text: str):
-                if self.progress_callback:
-                    self.progress_callback(f"Статус: {text}")
-            
-            def set_progress(current: int):
-                nonlocal last_percent, last_time
-                if max_progress > 0:
-                    percent = int((current / max_progress) * 100)
-                    current_time = time.time()
-                    
-                    if percent != last_percent and current_time - last_time > 0.5:
-                        if self.progress_callback:
-                            self.progress_callback(f"Підготовка: {percent}%")
-                        last_percent = percent
-                        last_time = current_time
-            
-            def set_max(max_val: int):
-                nonlocal max_progress
-                max_progress = max_val
-            
-            return {
-            #    "setStatus": set_status,
-                "setProgress": set_progress,
-                "setMax": set_max
-            }
-        
-        return callback_wrapper()
-    
-    def install(self, loader: str) -> bool:
         try:
-            install_dir = self.path_manager.get_install_dir(loader)
-            install_dir.mkdir(parents=True, exist_ok=True)
+            is_valid, message = Validator.validate_nickname(data.get('nickname', ''))
+            if not is_valid:
+                return False, message, None
+
+            loader = data.get('loader', 'fabric')
             
-            callback = self._create_callback()
+            ram = data.get('ram', '4G')
+            if ram not in ['2G', '4G', '8G', '16G']:
+                ram = '4G'
+                
+            window_size = data.get('windowSize', '1280x720')
+            valid_sizes = ['1280x720', '1920x1080', '1366x768', '1600x900']
+            if window_size not in valid_sizes:
+                window_size = '1280x720'
             
-            if loader == "fabric":
-                minecraft_launcher_lib.fabric.install_fabric(
-                    MC_VERSION, str(install_dir), callback=callback
-                )
-            elif loader == "forge":
-                forge_version = minecraft_launcher_lib.forge.find_forge_version(MC_VERSION)
-                minecraft_launcher_lib.forge.install_forge_version(
-                    forge_version, str(install_dir), callback=callback
-                )
-            elif loader == "vanilla":
-                minecraft_launcher_lib.install.install_minecraft_version(
-                    MC_VERSION, str(install_dir), callback=callback
-                )
-            else:
-                raise ValueError(f"Unknown loader: {loader}")
+            config = Config(
+                nickname=data.get('nickname', '').strip(),
+                loader=loader,
+                ram=ram,
+                window_size=window_size,
+                multiplayer=bool(data.get('multiplayer', True)),
+                console=bool(data.get('console', False)),
+                fullscreen=bool(data.get('fullscreen', False))
+            )
             
-            if self.progress_callback:
-                self.progress_callback("Встановлення завершено")
-            return True
-            
+            return True, "OK", config
         except Exception as e:
-            self.logger.error(f"Installation failed: {e}")
-            if self.progress_callback:
-                self.progress_callback(f"Помилка встановлення: {e}")
-            return False
+            ErrorHandler.show_error_dialog(
+                "Помилка валідації конфігурації",
+                str(e)
+            )
+            return False, "Помилка валідації", None
 
 class MinecraftLauncher:
     def __init__(self, path_manager: PathManager):
@@ -229,30 +213,28 @@ class MinecraftLauncher:
     
     @staticmethod
     def generate_offline_uuid(nickname: str) -> str:
-        namespace = uuid.UUID('00000000-0000-0000-0000-000000000000')
-        return str(uuid.uuid3(namespace, f"OfflinePlayer:{nickname}"))
-        
-    def copy_resources(self, config):
-        install_dir = self.path_manager.get_install_dir(config.loader)
-        os.makedirs(install_dir, exist_ok=True)
-
-        base_path = getattr(sys, '_MEIPASS', os.path.abspath("."))
-
-        for folder in ["fabric", "forge", "vanilla"]:
-            src = os.path.join(base_path, folder)
-            dst = os.path.join(install_dir, folder)
-            if not os.path.exists(dst):
-                shutil.copytree(src, dst, dirs_exist_ok=True)
-                
+        try:
+            namespace = uuid.UUID('00000000-0000-0000-0000-000000000000')
+            return str(uuid.uuid3(namespace, f"OfflinePlayer:{nickname}"))
+        except Exception as e:
+            ErrorHandler.show_error_dialog(
+                "Помилка генерації UUID",
+                str(e)
+            )
+            return str(uuid.uuid4())
+ 
     def launch(self, config: Config, progress_callback=None) -> bool:
         try:
-            self.copy_resources(config)
-            
             install_dir = self.path_manager.get_install_dir(config.loader)
             
             if not install_dir.exists():
+                error_msg = "Папка гри не знайдена"
                 if progress_callback:
-                    progress_callback("Папка гри не знайдена")
+                    progress_callback(error_msg)
+                ErrorHandler.show_error_dialog(
+                    "Помилка запуску гри",
+                    f"Папка {install_dir} не існує"
+                )
                 return False
             
             try:
@@ -276,18 +258,9 @@ class MinecraftLauncher:
             
             if config.multiplayer:
                 options["quickPlayMultiplayer"] = "play.qqq-craft.top"
-
-            if config.loader == "fabric":
-                loader_version = minecraft_launcher_lib.fabric.get_latest_loader_version()
-                version_id = f"fabric-loader-{loader_version}-{MC_VERSION}"
-            elif config.loader == "forge":
-                forge_version = minecraft_launcher_lib.forge.find_forge_version(MC_VERSION)
-                version_id = f"{MC_VERSION}-forge-{forge_version}"
-            else:  # vanilla
-                version_id = MC_VERSION
             
             command = minecraft_launcher_lib.command.get_minecraft_command(
-                version_id, str(install_dir), options
+                config.loader, str(install_dir), options
             )
             
             if progress_callback:
@@ -309,8 +282,218 @@ class MinecraftLauncher:
             
         except Exception as e:
             self.logger.error(f"Launch failed: {e}")
+            error_msg = f"Помилка запуску: {e}"
             if progress_callback:
-                progress_callback(f"Помилка запуску: {e}")
+                progress_callback(error_msg)
+            ErrorHandler.show_error_dialog(
+                "Помилка запуску Minecraft",
+                str(e)
+            )
+            return False
+
+class ModpacksManager:
+    def __init__(self, path_manager: PathManager):
+        self.path_manager = path_manager
+        self.data_manager = DataManager(self.path_manager)
+        self.logger = logging.getLogger(__name__)
+        self.session = requests.Session()
+        self.total = self.done = 0
+        try:
+            config = self.data_manager.load("data.json")
+            modpacks_url = config.get("modpacks-url")
+            if not modpacks_url:
+                raise ValueError("Не знайдено URL для модпаків в конфігурації")
+            self.url = modpacks_url.rstrip('/')
+        except Exception as e:
+            ErrorHandler.show_error_dialog(
+                "Помилка ініціалізації ModpacksManager",
+                str(e)
+            )
+            raise
+        
+    def md5(self, path):
+        try:
+            with open(path, 'rb') as f:
+                return hashlib.md5(f.read()).hexdigest()
+        except Exception as e:
+            self.logger.error(f"MD5 calculation failed for {path}: {e}")
+            return None
+    
+    def collect(self, items, path=''):
+        try:
+            files = {}
+            for item in items:
+                p = f"{path}/{item['name']}" if path else item['name']
+                if item['type'] == 'file':
+                    files[p] = item
+                elif 'children' in item:
+                    files.update(self.collect(item['children'], p))
+            return files
+        except Exception as e:
+            ErrorHandler.show_error_dialog(
+                "Помилка збирання файлів",
+                str(e)
+            )
+            return {}
+    
+    def download(self, path, info, callback=None):
+        try:
+            local = self.target_dir / path
+            if local.exists() and local.stat().st_size == info['size'] and self.md5(local) == info['checksum']:
+                self.done += info['size']
+                if callback:
+                    callback(self.done / self.total * 100, path, 'skipped')
+                return
+            
+            local.parent.mkdir(parents=True, exist_ok=True)
+            
+            file_url = f"{self.base_url}/public/{self.target + '/' if self.target else ''}{info['url']}"
+            r = self.session.get(file_url, timeout=30)
+            
+            if r.status_code == 200:
+                local.write_bytes(r.content)
+                self.done += info['size']
+                if callback:
+                    callback(self.done / self.total * 100, path, 'downloaded')
+                else:
+                    print(f"\r[{self.done/self.total*100:.1f}%] {path}", end='', flush=True)
+            else:
+                raise requests.RequestException(f"HTTP {r.status_code} для {file_url}")
+                
+        except Exception as e:
+            ErrorHandler.show_error_dialog(
+                f"Помилка завантаження файлу {path}",
+                str(e)
+            )
+    
+    def cleanup(self, server_files, sync_dirs):
+        try:
+            if not self.target_dir.exists(): 
+                return
+            for local_file in self.target_dir.rglob('*'):
+                if local_file.is_file():
+                    rel_path = str(local_file.relative_to(self.target_dir)).replace('\\', '/')
+                    root_dir = rel_path.split('/')[0]
+                    
+                    if root_dir in sync_dirs and rel_path not in server_files:
+                        local_file.unlink()
+                        print(f"Видалено: {rel_path}")
+        except Exception as e:
+            self.logger.error(f"Cleanup error: {e}")
+    
+    def check_modpack_exists(self, modpack: str) -> bool:
+        try:
+            url = f"{self.url}/index.php?modpack={modpack}"
+            response = self.session.get(url, timeout=10)
+            data = response.json()
+            return data.get('status') == 'ok'
+        except Exception as e:
+            self.logger.error(f"Error checking modpack existence: {e}")
+            ErrorHandler.show_error_dialog(
+                f"Помилка перевірки модпака {modpack}",
+                str(e)
+            )
+            return False
+    
+    def install_modpack(self, modpack='', target_dir='game', callback=None):
+        try:
+            self.target_dir = Path(target_dir)
+            self.target_dir.mkdir(parents=True, exist_ok=True)
+            
+            url = f"{self.url}/index.php"
+            if modpack:
+                url += f"?modpack={modpack}"
+            
+            data = self.session.get(url, timeout=30).json()
+            if data.get('status') != 'ok': 
+                error_msg = f"{data.get('message', 'Невідома помилка')}"
+                if callback:
+                    callback(0, '', 'error', error_msg)
+                else:
+                    print(error_msg)
+                ErrorHandler.show_error_dialog(
+                    "Помилка встановлення модпака",
+                    error_msg
+                )
+                return False
+            
+            files = self.collect(data['files'])
+            sync_dirs = data.get('sync_dirs', [])
+            self.total = data['total_size']
+            
+            self.target = data.get('target', '')
+            self.base_url = data.get('base_url', self.url)
+            
+            self.cleanup(files, sync_dirs)
+            
+            for path, info in files.items():
+                self.download(path, info, callback)
+            
+            if callback:
+                callback(100, '', 'complete', f"Готово! Файли в: {self.target_dir}")
+            else:
+                print(f"\nГотово! Файли в: {self.target_dir}")
+            return True
+            
+        except Exception as e:
+            ErrorHandler.show_error_dialog(
+                "Помилка встановлення модпака",
+                str(e)
+            )
+            return False
+
+    def install_loader(self, loader: str, version: str, target_dir: str, callback=None) -> bool:
+        try:
+            install_dir = Path(target_dir)
+            install_dir.mkdir(parents=True, exist_ok=True)
+
+            last_percent, last_time, max_progress = -1, time.time(), [0]
+            
+            def set_progress(current: int):
+                nonlocal last_percent, last_time
+                if max_progress[0] > 0:
+                    percent = (current / max_progress[0]) * 100
+                    current_time = time.time()
+                    if int(percent) != last_percent and current_time - last_time > 0.5:
+                        if callback:
+                            callback(percent, f"Файл {current}/{max_progress[0]}", 'downloaded')
+                        last_percent, last_time = int(percent), current_time
+            
+            def set_max(max_val: int):
+                max_progress[0] = max_val
+            
+            def set_status(text: str):
+                if callback:
+                    callback(0, text, 'status')
+            
+            ml_callback = {
+                "setProgress": set_progress,
+                "setMax": set_max,
+                "setStatus": set_status
+            }
+            
+            if loader == "fabric":
+                minecraft_launcher_lib.fabric.install_fabric(version, str(install_dir), callback=ml_callback)
+            elif loader == "forge":
+                forge_version = minecraft_launcher_lib.forge.find_forge_version(version)
+                minecraft_launcher_lib.forge.install_forge_version(forge_version, str(install_dir), callback=ml_callback)
+            elif loader == "vanilla":
+                minecraft_launcher_lib.install.install_minecraft_version(version, str(install_dir), callback=ml_callback)
+            else:
+                raise ValueError(f"Unknown loader: {loader}")
+            
+            if callback:
+                callback(100, '', 'complete', f"Встановлення {loader} завершено")
+            return True
+            
+        except Exception as e:
+            self.logger.error(f"Installation failed: {e}")
+            if callback:
+                callback(0, '', 'error', f"Помилка встановлення: {e}")
+            ErrorHandler.show_error_dialog(
+                f"Помилка встановлення {loader}",
+                str(e)
+            )
             return False
 
 class WebSocketManager:
@@ -319,8 +502,8 @@ class WebSocketManager:
         self.logger = logging.getLogger(__name__)
     
     async def handle_client(self, websocket):
-        self.clients.add(websocket)
         try:
+            self.clients.add(websocket)
             async for message in websocket:
                 await websocket.send(f"Echo: {message}")
         except Exception as e:
@@ -333,22 +516,25 @@ class WebSocketManager:
             return
         
         def send_to_clients():
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            
-            async def broadcast_async():
-                if self.clients:
-                    disconnected = set()
-                    for client in self.clients.copy():
-                        try:
-                            await client.send(message)
-                        except Exception:
-                            disconnected.add(client)
-                    
-                    self.clients -= disconnected
-            
-            loop.run_until_complete(broadcast_async())
-            loop.close()
+            try:
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                
+                async def broadcast_async():
+                    if self.clients:
+                        disconnected = set()
+                        for client in self.clients.copy():
+                            try:
+                                await client.send(message)
+                            except Exception:
+                                disconnected.add(client)
+                        
+                        self.clients -= disconnected
+                
+                loop.run_until_complete(broadcast_async())
+                loop.close()
+            except Exception as e:
+                self.logger.error(f"Broadcast error: {e}")
         
         threading.Thread(target=send_to_clients, daemon=True).start()
     
@@ -360,44 +546,63 @@ class WebSocketManager:
             await server.wait_closed()
         except Exception as e:
             self.logger.error(f"WebSocket server error: {e}")
+            ErrorHandler.show_error_dialog(
+                "Помилка WebSocket сервера",
+                str(e)
+            )
 
 class Application:
     def __init__(self):
-        self.setup_logging()
-        self.path_manager = PathManager()
-        self.data_manager = DataManager(self.path_manager)
-        self.installer = MinecraftInstaller(self.path_manager)
-        self.launcher = MinecraftLauncher(self.path_manager)
-        self.websocket_manager = WebSocketManager()
-        self.window = None
-        
-        self.app = Flask(__name__)
-        self.setup_routes()
-        
-        self.installer.set_progress_callback(self.websocket_manager.broadcast)
+        try:
+            self.setup_logging()
+            self.path_manager = PathManager()
+            self.data_manager = DataManager(self.path_manager)
+            self.modpacks_manager = ModpacksManager(self.path_manager)
+            self.launcher = MinecraftLauncher(self.path_manager)
+            self.websocket_manager = WebSocketManager()
+            self.window = None
+            
+            self.app = Flask(__name__)
+            self.setup_routes()
+        except Exception as e:
+            ErrorHandler.show_error_dialog(
+                "Помилка ініціалізації програми",
+                str(e)
+            )
+            raise
     
     def setup_logging(self):
-        logging.basicConfig(
-            level=logging.INFO,
-            format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-            handlers=[
-                logging.StreamHandler(),
-                logging.FileHandler('launcher.log', encoding='utf-8')
-            ]
-        )
-        self.logger = logging.getLogger(__name__)
+        try:
+            logging.basicConfig(
+                level=logging.INFO,
+                format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+                handlers=[
+                    logging.StreamHandler(),
+                    logging.FileHandler('launcher.log', encoding='utf-8')
+                ]
+            )
+            self.logger = logging.getLogger(__name__)
+        except Exception as e:
+            print(f"Помилка налаштування логування: {e}")
     
     def setup_routes(self):
         @self.app.route('/')
         def index():
-            config_data = self.data_manager.load("user.json")
-            news_data = self.load_news()
-            return render_template(
-                "index.html",
-                news=news_data,
-                data=config_data,
-                is_latest_version=self.is_latest_version()
-            )
+            try:
+                config_data = self.data_manager.load("user.json")
+                news_data = self.load_news()
+                return render_template(
+                    "index.html",
+                    news=news_data,
+                    data=config_data,
+                    is_latest_version=self.is_latest_version()
+                )
+            except Exception as e:
+                ErrorHandler.show_error_dialog(
+                    "Помилка завантаження головної сторінки",
+                    str(e)
+                )
+                return "Помилка завантаження", 500
         
         @self.app.route('/start', methods=['POST'])
         def start_game():
@@ -412,26 +617,71 @@ class Application:
                 
                 self.data_manager.save(asdict(config), "user.json")
 
+                last_percent = -1
+                last_time = time.time()
+                def progress_callback(percent, current_file, status, message=None):
+                    nonlocal last_percent, last_time
+                    current_time = time.time()
+                    
+                    if status == 'start':
+                        self.websocket_manager.broadcast(message)
+                    elif status in ['downloaded', 'skipped']:
+                        percent_int = int(percent)
+                        if (percent_int != last_percent and 
+                            (current_time - last_time > 0.5 or abs(percent_int - last_percent) >= 1)):
+                            action = "Завантаження" if status == 'downloaded' else "Перевірка файлів"
+                            self.websocket_manager.broadcast(f"[{percent:.0f}%] {action}")
+                            last_percent = percent_int
+                            last_time = current_time
+                    elif status == 'complete':
+                        self.websocket_manager.broadcast(message)
+                    elif status == 'error':
+                        self.websocket_manager.broadcast(message)
+
                 def install_and_launch():
                     try:
-                        if self.installer.install(config.loader):
-                            success = self.launcher.launch(config, self.websocket_manager.broadcast)
-                            if success:
-                                self.websocket_manager.broadcast("Гру запущено успішно! Лаунчер закривається...")
-                                threading.Timer(3.0, self.close_window).start()
-                            else:
-                                self.websocket_manager.broadcast("Помилка запуску гри")
+                        progress_callback(0, '', 'start', f"Підготовка")
+                        
+                        install_dir = self.path_manager.get_install_dir(config.loader)
+                        
+                        if self.modpacks_manager.check_modpack_exists(config.loader):
+                            install_success = self.modpacks_manager.install_modpack(
+                                config.loader, install_dir, progress_callback
+                            )
+                            error_msg = "Помилка встановлення гри"
                         else:
-                            self.websocket_manager.broadcast("Помилка встановлення гри")
+                            install_success = self.modpacks_manager.install_loader(
+                                "vanilla", config.loader, self.websocket_manager.broadcast
+                            )
+                            error_msg = "Помилка встановлення ванільної версії"
+                        
+                        if not install_success:
+                            self.websocket_manager.broadcast(error_msg)
+                            return
+
+                        if self.launcher.launch(config, self.websocket_manager.broadcast):
+                            self.websocket_manager.broadcast("Гру запущено успішно! Лаунчер закривається...")
+                            threading.Timer(3.0, self.close_window).start()
+                        else:
+                            self.websocket_manager.broadcast("Помилка запуску гри")
+                            
                     except Exception as e:
                         self.logger.error(f"Install/Launch error: {e}")
-                        self.websocket_manager.broadcast(f"Помилка: {e}")
-                
+                        self.websocket_manager.broadcast(f"{e}")
+                        ErrorHandler.show_error_dialog(
+                            "Помилка встановлення/запуску",
+                            str(e)
+                        )
+
                 threading.Thread(target=install_and_launch, daemon=True).start()
                 return jsonify({"success": True})
-                
+
             except Exception as e:
                 self.logger.error(f"Start game error: {e}")
+                ErrorHandler.show_error_dialog(
+                    "Помилка запуску гри",
+                    str(e)
+                )
                 return jsonify({"success": False, "error": str(e)})
         
         @self.app.route('/static/<filename>')
@@ -440,26 +690,43 @@ class Application:
                 
         @self.app.route('/game_folder', methods=['POST'])
         def game_folder():
-            data = request.form.to_dict()
-            if not data:
-                return jsonify({"success": False, "error": "Невірні дані"})
             try:
+                data = request.form.to_dict()
+                if not data:
+                    return jsonify({"success": False, "error": "Невірні дані"})
+                
                 is_valid, message, config = Validator.validate_config(data)
+                if not is_valid:
+                    return jsonify({"success": False, "error": message})
+                
                 install_dir = self.path_manager.get_install_dir(config.loader)
-                os.startfile(install_dir)
+                
+                if IS_WINDOWS:
+                    os.startfile(install_dir)
+                else:
+                    subprocess.run(['xdg-open', str(install_dir)])
+                    
                 return jsonify({"success": True, "message": "Папку відкрито!"})
             except Exception as e:
                 self.logger.error(f"Помилка при відкритті папки: {e}")
+                ErrorHandler.show_error_dialog(
+                    "Помилка відкриття папки гри",
+                    str(e)
+                )
                 return jsonify({"success": False, "error": str(e)})
-
-            install_dir = self.path_manager.get_install_dir(config.loader)
-            os.startfile(install_dir)
-            return jsonify({"success": True, "message": "Відкриття папки гри..."})
         
         @self.app.route('/close')
         def close_launcher():
-            threading.Timer(1.0, self.close_window).start()
-            return jsonify({"success": True, "message": "Лаунчер закривається..."})
+            try:
+                threading.Timer(1.0, self.close_window).start()
+                return jsonify({"success": True, "message": "Лаунчер закривається..."})
+            except Exception as e:
+                self.logger.error(f"Close launcher error: {e}")
+                ErrorHandler.show_error_dialog(
+                    "Помилка закриття лаунчера",
+                    str(e)
+                )
+                return jsonify({"success": False, "error": str(e)})
     
     def load_news(self) -> list:
         try:
@@ -486,9 +753,12 @@ class Application:
 
         except Exception as e:
             self.logger.error(f"Failed to load news: {e}")
+            ErrorHandler.show_error_dialog(
+                "Помилка завантаження новин",
+                str(e)
+            )
             return []
 
-    
     def is_latest_version(self) -> bool:
         try:
             config = self.data_manager.load("data.json")
@@ -512,18 +782,30 @@ class Application:
             self.logger.debug(f"Window close error: {e}")
     
     def run_flask(self):
-        self.app.run(
-            debug=False,
-            port=FLASK_PORT,
-            use_reloader=False,
-            threaded=True,
-            host='127.0.0.1'
-        )
+        try:
+            self.app.run(
+                debug=False,
+                port=FLASK_PORT,
+                use_reloader=False,
+                threaded=True,
+                host='127.0.0.1'
+            )
+        except Exception as e:
+            ErrorHandler.show_error_dialog(
+                "Помилка запуску Flask сервера",
+                str(e)
+            )
     
     def run_websocket(self):
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        loop.run_until_complete(self.websocket_manager.start_server())
+        try:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            loop.run_until_complete(self.websocket_manager.start_server())
+        except Exception as e:
+            ErrorHandler.show_error_dialog(
+                "Помилка запуску WebSocket сервера",
+                str(e)
+            )
     
     def run(self):
         try:
@@ -542,6 +824,10 @@ class Application:
             
         except Exception as e:
             self.logger.error(f"Application error: {e}")
+            ErrorHandler.show_error_dialog(
+                "Критична помилка програми",
+                str(e)
+            )
             sys.exit(1)
 
 def main():
@@ -549,22 +835,36 @@ def main():
         app = Application()
 
         if not app.is_latest_version():
-            root = tk.Tk()
-            root.withdraw()
-            result = messagebox.askyesno("Оновлення", f"Доступна нова версія лаунчера! Бажаєте завантажити?")
-            
-            if result:
-                config = app.data_manager.load("data.json")
-                update_url = config.get("update-url")
-                os.startfile(update_url)
-                sys.exit(0)
+            try:
+                root = tk.Tk()
+                root.withdraw()
+                result = messagebox.askyesno("Оновлення", f"Доступна нова версія лаунчера! Бажаєте завантажити?")
+                
+                if result:
+                    config = app.data_manager.load("data.json")
+                    update_url = config.get("update-url")
+                    if update_url:
+                        if IS_WINDOWS:
+                            os.startfile(update_url)
+                        else:
+                            subprocess.run(['xdg-open', update_url])
+                    sys.exit(0)
+            except Exception as e:
+                ErrorHandler.show_error_dialog(
+                    "Помилка перевірки оновлень",
+                    str(e)
+                )
         
         app.run()
+        
     except KeyboardInterrupt:
         print("\nПрограма зупинена користувачем")
         sys.exit(0)
     except Exception as e:
-        print(f"Критична помилка: {e}")
+        ErrorHandler.show_error_dialog(
+            "Критична помилка запуску програми",
+            str(e)
+        )
         sys.exit(1)
 
 if __name__ == "__main__":

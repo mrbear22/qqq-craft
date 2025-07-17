@@ -78,10 +78,7 @@ VSVersionInfo(
             '--noconfirm',
             '--contents-directory=.',
             '--add-data', f'static{os.pathsep}static',  
-            '--add-data', f'templates{os.pathsep}templates',  
-            '--add-data', f'fabric{os.pathsep}fabric',  
-            '--add-data', f'forge{os.pathsep}forge',  
-            '--add-data', f'vanilla{os.pathsep}vanilla',  
+            '--add-data', f'templates{os.pathsep}templates',
             '--icon', icon_path,
             '--version-file', version_file,
             f'{script}.py'

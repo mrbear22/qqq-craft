@@ -385,6 +385,7 @@ label {
   content: '';
   display: inline-block;
   width: 1em;
+  text-align: start;
   animation: dots 1s steps(3, end) infinite;
 }
 

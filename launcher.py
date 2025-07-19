@@ -31,7 +31,7 @@ import websockets
 import asyncio
 import markdown
 
-VERSION = "1.0.22.0"
+VERSION = "1.0.23.0"
 FLASK_PORT = 6724
 WEBSOCKET_PORT = 5263
 
@@ -292,61 +292,60 @@ class MinecraftLauncher:
             return False
 
 class ModpacksManager:
-    def __init__(self, path_manager: PathManager):
+    def __init__(self, path_manager):
         self.path_manager = path_manager
         self.data_manager = DataManager(self.path_manager)
         self.logger = logging.getLogger(__name__)
         self.session = requests.Session()
         self.total = self.done = 0
-        try:
-            config = self.data_manager.load("data.json")
-            modpacks_url = config.get("modpacks-url")
-            if not modpacks_url:
-                raise ValueError("Не знайдено URL для модпаків в конфігурації")
-            self.url = modpacks_url.rstrip('/')
-        except Exception as e:
-            ErrorHandler.show_error_dialog(
-                "Помилка ініціалізації ModpacksManager",
-                str(e)
-            )
-            raise
         
+        config = self.data_manager.load("data.json")
+        self.url = config.get("modpacks-url", "").rstrip('/')
+        if not self.url:
+            raise ValueError("Не знайдено URL для модпаків")
+    
     def md5(self, path):
         try:
             with open(path, 'rb') as f:
                 return hashlib.md5(f.read()).hexdigest()
-        except Exception as e:
-            self.logger.error(f"MD5 calculation failed for {path}: {e}")
+        except:
             return None
     
-    def collect(self, items, path=''):
-        try:
-            files = {}
-            for item in items:
-                p = f"{path}/{item['name']}" if path else item['name']
-                if item['type'] == 'file':
-                    files[p] = item
-                elif 'children' in item:
-                    files.update(self.collect(item['children'], p))
-            return files
-        except Exception as e:
-            ErrorHandler.show_error_dialog(
-                "Помилка збирання файлів",
-                str(e)
-            )
-            return {}
+    def get_dir_size(self, dir_path):
+        if not dir_path.exists():
+            return 0
+        return sum(f.stat().st_size for f in dir_path.rglob('*') if f.is_file())
+    
+    def collect_files(self, items, path=''):
+        files = {}
+        for item in items:
+            p = f"{path}/{item['name']}" if path else item['name']
+            if item['type'] == 'file':
+                files[p] = item
+            elif 'children' in item:
+                files.update(self.collect_files(item['children'], p))
+        return files
     
     def download(self, path, info, callback=None):
         try:
             local = self.target_dir / path
-            if local.exists() and local.stat().st_size == info['size'] and self.md5(local) == info['checksum']:
+            
+            if not local.exists():
+                pass
+            elif info.get('sync', False):
+                if (local.stat().st_size == info['size'] and 
+                    self.md5(local) == info['checksum']):
+                    self.done += info['size']
+                    if callback:
+                        callback(self.done / self.total * 100, path, 'skipped')
+                    return
+            else:
                 self.done += info['size']
                 if callback:
                     callback(self.done / self.total * 100, path, 'skipped')
                 return
             
             local.parent.mkdir(parents=True, exist_ok=True)
-            
             file_url = f"{self.base_url}/public/{self.target + '/' if self.target else ''}{info['url']}"
             r = self.session.get(file_url, timeout=30)
             
@@ -355,44 +354,54 @@ class ModpacksManager:
                 self.done += info['size']
                 if callback:
                     callback(self.done / self.total * 100, path, 'downloaded')
-                else:
-                    print(f"\r[{self.done/self.total*100:.1f}%] {path}", end='', flush=True)
             else:
-                raise requests.RequestException(f"HTTP {r.status_code} для {file_url}")
-                
+                raise requests.RequestException(f"HTTP {r.status_code}")
         except Exception as e:
-            ErrorHandler.show_error_dialog(
-                f"Помилка завантаження файлу {path}",
-                str(e)
-            )
+            ErrorHandler.show_error_dialog(f"Помилка завантаження {path}", str(e))
     
-    def cleanup(self, server_files, sync_dirs):
-        try:
-            if not self.target_dir.exists(): 
-                return
-            for local_file in self.target_dir.rglob('*'):
-                if local_file.is_file():
-                    rel_path = str(local_file.relative_to(self.target_dir)).replace('\\', '/')
-                    root_dir = rel_path.split('/')[0]
+    def process_files(self, items, path=''):
+        files_to_download = {}
+        
+        for item in items:
+            current_path = f"{path}/{item['name']}" if path else item['name']
+            
+            if item['type'] == 'dir':
+                local_dir = self.target_dir / current_path
+                
+                if (local_dir.exists() and 
+                    self.get_dir_size(local_dir) == item['size']):
                     
-                    if root_dir in sync_dirs and rel_path not in server_files:
+                    for child in item.get('children', []):
+                        if child['type'] == 'file':
+                            self.done += child['size']
+                    continue
+                
+                if 'children' in item:
+                    child_files = self.process_files(item['children'], current_path)
+                    files_to_download.update(child_files)
+            else:
+                files_to_download[current_path] = item
+        
+        return files_to_download
+    
+    def cleanup_sync_files(self, server_files):
+        if not self.target_dir.exists():
+            return
+        
+        for local_file in self.target_dir.rglob('*'):
+            if local_file.is_file():
+                rel_path = str(local_file.relative_to(self.target_dir)).replace('\\', '/')
+                if rel_path not in server_files:
+                    server_file = server_files.get(rel_path.split('/')[0])
+                    if server_file and server_file.get('sync', False):
                         local_file.unlink()
-                        print(f"Видалено: {rel_path}")
-        except Exception as e:
-            self.logger.error(f"Cleanup error: {e}")
     
     def check_modpack_exists(self, modpack: str) -> bool:
         try:
             url = f"{self.url}/index.php?modpack={modpack}"
             response = self.session.get(url, timeout=10)
-            data = response.json()
-            return data.get('status') == 'ok'
-        except Exception as e:
-            self.logger.error(f"Error checking modpack existence: {e}")
-            ErrorHandler.show_error_dialog(
-                f"Помилка перевірки модпака {modpack}",
-                str(e)
-            )
+            return response.json().get('status') == 'ok'
+        except:
             return False
     
     def install_modpack(self, modpack='', target_dir='game', callback=None):
@@ -405,41 +414,31 @@ class ModpacksManager:
                 url += f"?modpack={modpack}"
             
             data = self.session.get(url, timeout=30).json()
-            if data.get('status') != 'ok': 
-                error_msg = f"{data.get('message', 'Невідома помилка')}"
+            if data.get('status') != 'ok':
+                error_msg = data.get('message', 'Невідома помилка')
                 if callback:
                     callback(0, '', 'error', error_msg)
-                else:
-                    print(error_msg)
-                ErrorHandler.show_error_dialog(
-                    "Помилка встановлення модпака",
-                    error_msg
-                )
+                ErrorHandler.show_error_dialog("Помилка встановлення", error_msg)
                 return False
             
-            files = self.collect(data['files'])
-            sync_dirs = data.get('sync_dirs', [])
             self.total = data['total_size']
-            
             self.target = data.get('target', '')
             self.base_url = data.get('base_url', self.url)
             
-            self.cleanup(files, sync_dirs)
+            all_files = self.collect_files(data['files'])
+            self.cleanup_sync_files(all_files)
             
-            for path, info in files.items():
+            files_to_process = self.process_files(data['files'])
+            
+            for path, info in files_to_process.items():
                 self.download(path, info, callback)
             
             if callback:
-                callback(100, '', 'complete', f"Готово! Файли в: {self.target_dir}")
-            else:
-                print(f"\nГотово! Файли в: {self.target_dir}")
+                callback(100, '', 'complete', f"Готово!")
             return True
             
         except Exception as e:
-            ErrorHandler.show_error_dialog(
-                "Помилка встановлення модпака",
-                str(e)
-            )
+            ErrorHandler.show_error_dialog("Помилка встановлення", str(e))
             return False
 
     def install_loader(self, loader: str, version: str, target_dir: str, callback=None) -> bool:
@@ -660,7 +659,7 @@ class Application:
                             return
 
                         if self.launcher.launch(config, self.websocket_manager.broadcast):
-                            self.websocket_manager.broadcast("Гру запущено успішно! Лаунчер закривається...")
+                            self.websocket_manager.broadcast("Гру запущено успішно! Лаунчер закривається")
                             threading.Timer(3.0, self.close_window).start()
                         else:
                             self.websocket_manager.broadcast("Помилка запуску гри")

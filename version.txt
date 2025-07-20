@@ -3,8 +3,8 @@
 #
 VSVersionInfo(
   ffi=FixedFileInfo(
-    filevers=(1,0,23, 0),
-    prodvers=(1,0,23, 0),
+    filevers=(1,0,24, 0),
+    prodvers=(1,0,24, 0),
     mask=0x3f,
     flags=0x0,
     OS=0x40004,
@@ -20,12 +20,12 @@ VSVersionInfo(
           [
             StringStruct('CompanyName', 'QQQ-CRAFT'),
             StringStruct('FileDescription', 'Launcher for QQQ-CRAFT project'),
-            StringStruct('FileVersion', '1.0.23'),
+            StringStruct('FileVersion', '1.0.24'),
             StringStruct('InternalName', 'QQQ-CRAFT'),
             StringStruct('LegalCopyright', 'Copyright © 2025'),
             StringStruct('OriginalFilename', 'qqq-craft.exe'),
             StringStruct('ProductName', 'QQQ-CRAFT'),
-            StringStruct('ProductVersion', '1.0.23')
+            StringStruct('ProductVersion', '1.0.24')
           ]
         )
       ]

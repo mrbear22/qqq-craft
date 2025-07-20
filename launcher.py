@@ -21,7 +21,7 @@ from typing import Dict, Optional, Tuple, Any
 from dataclasses import dataclass, asdict
 
 import requests
-from flask import Flask, render_template, request, jsonify, send_from_directory
+from flask import Flask, render_template, request, jsonify, send_from_directory, redirect
 from tkinter import messagebox, scrolledtext
 from packaging import version
 import minecraft_launcher_lib
@@ -31,7 +31,7 @@ import websockets
 import asyncio
 import markdown
 
-VERSION = "1.0.23.0"
+VERSION = "1.0.24.0"
 FLASK_PORT = 6724
 WEBSOCKET_PORT = 5263
 
@@ -47,7 +47,7 @@ class ErrorHandler:
     def show_error_dialog(error_message: str, error_details: str = None):
         try:
             root = tk.Tk()
-            root.withdraw()  # не показуємо основне вікно
+            root.withdraw()
 
             full_error = (
                 f"Версія лаунчера: {VERSION}\n"
@@ -154,7 +154,6 @@ class Validator:
             if not (3 <= len(nickname) <= 16):
                 return False, "Нікнейм повинен бути від 3 до 16 символів"
             
-            # Перевірка тільки на латинські літери, цифри, дефіс і підкреслення
             if not re.fullmatch(r'[A-Za-z0-9_-]+', nickname):
                 return False, "Нікнейм може містити лише англійські літери, цифри, дефіс або підкреслення"
             
@@ -388,12 +387,15 @@ class ModpacksManager:
         if not self.target_dir.exists():
             return
         
+        sync_files = {path for path, info in server_files.items() if info.get('sync', False)}
+        
         for local_file in self.target_dir.rglob('*'):
             if local_file.is_file():
                 rel_path = str(local_file.relative_to(self.target_dir)).replace('\\', '/')
+                
                 if rel_path not in server_files:
-                    server_file = server_files.get(rel_path.split('/')[0])
-                    if server_file and server_file.get('sync', False):
+                    parent_dir = '/'.join(rel_path.split('/')[:-1])
+                    if any(sync_file.startswith(parent_dir) for sync_file in sync_files):
                         local_file.unlink()
     
     def check_modpack_exists(self, modpack: str) -> bool:
@@ -434,7 +436,7 @@ class ModpacksManager:
                 self.download(path, info, callback)
             
             if callback:
-                callback(100, '', 'complete', f"Готово!")
+                callback(100, '', 'complete', f"Майже готово")
             return True
             
         except Exception as e:
@@ -549,7 +551,7 @@ class WebSocketManager:
                 "Помилка WebSocket сервера",
                 str(e)
             )
-
+            
 class Application:
     def __init__(self):
         try:
@@ -686,6 +688,22 @@ class Application:
         @self.app.route('/static/<filename>')
         def static_files(filename):
             return send_from_directory('static', filename)
+        
+        @self.app.route('/external_link')
+        def external_link():
+            try:
+                url = request.args.get('url')
+                if url:
+                    decoded_url = urllib.parse.unquote(url)
+                    if not (decoded_url.startswith('http://') or decoded_url.startswith('https://')):
+                        decoded_url = 'https://' + decoded_url
+                    return redirect(decoded_url)
+                else:
+                    return redirect('/')
+                
+            except Exception as e:
+                self.logger.error(f"Помилка редіректу: {e}")
+                return redirect('/')
                 
         @self.app.route('/game_folder', methods=['POST'])
         def game_folder():
@@ -727,6 +745,28 @@ class Application:
                 )
                 return jsonify({"success": False, "error": str(e)})
     
+    def replace_links_with_redirect(self, content):
+        try:
+            def replace_link(match):
+                original_url = match.group(1)
+                attributes = match.group(2)
+                link_text = match.group(3)
+                
+                encoded_url = urllib.parse.quote(original_url, safe='')
+                new_url = f"/external_link?url={encoded_url}"
+                
+                if 'target=' not in attributes:
+                    attributes += ' target="_blank"'
+                
+                return f'<a href="{new_url}"{attributes}>{link_text}</a>'
+            
+            return re.sub(r'<a\s+(?:[^>]*\s+)?href=["\']([^"\']+)["\']([^>]*)>(.*?)</a>', 
+                         replace_link, content, flags=re.IGNORECASE | re.DOTALL)
+            
+        except Exception as e:
+            self.logger.error(f"Помилка обробки посилань: {e}")
+            return content
+    
     def load_news(self) -> list:
         try:
             config = self.data_manager.load("data.json")
@@ -741,7 +781,8 @@ class Application:
 
             for news_item in news:
                 if news_item.get("description"):
-                    news_item["description"] = markdown.markdown(news_item["description"])
+                    html_content = markdown.markdown(news_item["description"])
+                    news_item["description"] = self.replace_links_with_redirect(html_content)
 
                 if news_item.get("timestamp"):
                     timestamp = news_item["timestamp"]
@@ -757,7 +798,45 @@ class Application:
                 str(e)
             )
             return []
+            
+    def load_rules(self) -> dict:
+        try:
+            import html
+            import json
+            config = self.data_manager.load("data.json")
+            rules_url = config.get("rules-url")
+            
+            if not rules_url:
+                self.logger.warning("No 'rules-url' found in config.")
+                return {}
+            
+            response = requests.get(rules_url, timeout=10)
+            response.raise_for_status()
+            
+            json_text = response.text
+            rules = json.loads(json_text)
+            
+            if rules.get("rules"):
+                for rule in rules["rules"]:
+                    if rule.get("icon"):
+                        rule["icon"] = html.unescape(rule["icon"])
+                    if rule.get("description"):
+                        rule["description"] = html.unescape(rule["description"])
+                        rule["description"] = self.replace_links_with_redirect(rule["description"])
+                    if rule.get("details"):
+                        rule["details"] = html.unescape(rule["details"])
+                        rule["details"] = self.replace_links_with_redirect(rule["details"])
+            
+            return rules
 
+        except Exception as e:
+            self.logger.error(f"Failed to load rules: {e}")
+            ErrorHandler.show_error_dialog(
+                "Помилка завантаження правил",
+                str(e)
+            )
+            return {}
+                
     def is_latest_version(self) -> bool:
         try:
             config = self.data_manager.load("data.json")
@@ -828,6 +907,7 @@ class Application:
                 str(e)
             )
             sys.exit(1)
+
 
 def main():
     try:

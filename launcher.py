@@ -10,6 +10,7 @@ import json
 import uuid
 import time
 import shutil
+import urllib
 import hashlib
 import logging
 import platform
@@ -30,10 +31,16 @@ import webview
 import websockets
 import asyncio
 import markdown
+import concurrent.futures
+import threading
 
-VERSION = "1.0.24.0"
+VERSION = "1.0.25.0"
 FLASK_PORT = 6724
 WEBSOCKET_PORT = 5263
+
+MODPACKS_URL = "http://188.40.152.223:25777/"
+GITHUB_REPO = "https://api.github.com/repos/mrbear22/qqq-craft/releases/latest"
+NEWS_URL = "https://qqq-craft.top/news/?get"
 
 IS_WINDOWS = platform.system() == "Windows"
 IS_LINUX = platform.system() == "Linux"
@@ -297,11 +304,11 @@ class ModpacksManager:
         self.logger = logging.getLogger(__name__)
         self.session = requests.Session()
         self.total = self.done = 0
+        self.done_lock = threading.Lock()  # Для безпечного оновлення лічильника
         
-        config = self.data_manager.load("data.json")
-        self.url = config.get("modpacks-url", "").rstrip('/')
-        if not self.url:
-            raise ValueError("Не знайдено URL для модпаків")
+        self.url = MODPACKS_URL #config.get("modpacks-url", "").rstrip('/')
+        #if not self.url:
+            #raise ValueError("Не знайдено URL для модпаків")
     
     def md5(self, path):
         try:
@@ -334,27 +341,37 @@ class ModpacksManager:
             elif info.get('sync', False):
                 if (local.stat().st_size == info['size'] and 
                     self.md5(local) == info['checksum']):
-                    self.done += info['size']
+                    with self.done_lock:
+                        self.done += info['size']
+                        current_progress = self.done / self.total * 100
                     if callback:
-                        callback(self.done / self.total * 100, path, 'skipped')
+                        callback(current_progress, path, 'skipped')
                     return
             else:
-                self.done += info['size']
+                with self.done_lock:
+                    self.done += info['size']
+                    current_progress = self.done / self.total * 100
                 if callback:
-                    callback(self.done / self.total * 100, path, 'skipped')
+                    callback(current_progress, path, 'skipped')
                 return
             
             local.parent.mkdir(parents=True, exist_ok=True)
             file_url = f"{self.base_url}/public/{self.target + '/' if self.target else ''}{info['url']}"
-            r = self.session.get(file_url, timeout=30)
+            
+            # Створюємо окрему сесію для кожного потоку
+            session = requests.Session()
+            r = session.get(file_url, timeout=30)
             
             if r.status_code == 200:
                 local.write_bytes(r.content)
-                self.done += info['size']
+                with self.done_lock:
+                    self.done += info['size']
+                    current_progress = self.done / self.total * 100
                 if callback:
-                    callback(self.done / self.total * 100, path, 'downloaded')
+                    callback(current_progress, path, 'downloaded')
             else:
                 raise requests.RequestException(f"HTTP {r.status_code}")
+                
         except Exception as e:
             ErrorHandler.show_error_dialog(f"Помилка завантаження {path}", str(e))
     
@@ -372,7 +389,8 @@ class ModpacksManager:
                     
                     for child in item.get('children', []):
                         if child['type'] == 'file':
-                            self.done += child['size']
+                            with self.done_lock:
+                                self.done += child['size']
                     continue
                 
                 if 'children' in item:
@@ -400,7 +418,7 @@ class ModpacksManager:
     
     def check_modpack_exists(self, modpack: str) -> bool:
         try:
-            url = f"{self.url}/index.php?modpack={modpack}"
+            url = f"{self.url}/?modpack={modpack}"
             response = self.session.get(url, timeout=10)
             return response.json().get('status') == 'ok'
         except:
@@ -411,7 +429,7 @@ class ModpacksManager:
             self.target_dir = Path(target_dir)
             self.target_dir.mkdir(parents=True, exist_ok=True)
             
-            url = f"{self.url}/index.php"
+            url = f"{self.url}/"
             if modpack:
                 url += f"?modpack={modpack}"
             
@@ -426,14 +444,28 @@ class ModpacksManager:
             self.total = data['total_size']
             self.target = data.get('target', '')
             self.base_url = data.get('base_url', self.url)
+            self.done = 0  # Скидаємо лічильник
             
             all_files = self.collect_files(data['files'])
             self.cleanup_sync_files(all_files)
             
             files_to_process = self.process_files(data['files'])
             
-            for path, info in files_to_process.items():
-                self.download(path, info, callback)
+            # Паралельне завантаження з 10 потоками
+            with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
+                # Створюємо список завдань для завантаження
+                future_to_file = {
+                    executor.submit(self.download, path, info, callback): path 
+                    for path, info in files_to_process.items()
+                }
+                
+                # Очікуємо завершення всіх завантажень
+                for future in concurrent.futures.as_completed(future_to_file):
+                    path = future_to_file[future]
+                    try:
+                        future.result()  # Отримуємо результат (або винятки)
+                    except Exception as exc:
+                        self.logger.error(f'Файл {path} згенерував виняток: {exc}')
             
             if callback:
                 callback(100, '', 'complete', f"Майже готово")
@@ -654,7 +686,7 @@ class Application:
                             install_success = self.modpacks_manager.install_loader(
                                 "vanilla", config.loader, self.websocket_manager.broadcast
                             )
-                            error_msg = "Помилка встановлення ванільної версії"
+                            error_msg = "Помилка встановлення гри"
                         
                         if not install_success:
                             self.websocket_manager.broadcast(error_msg)
@@ -770,7 +802,9 @@ class Application:
     def load_news(self) -> list:
         try:
             config = self.data_manager.load("data.json")
-            news_url = config.get("news-url")
+            news_url = NEWS_URL #config.get("news-url")
+            if True:
+                return []
             if not news_url:
                 self.logger.warning("No 'news-url' found in config.")
                 return []
@@ -793,10 +827,10 @@ class Application:
 
         except Exception as e:
             self.logger.error(f"Failed to load news: {e}")
-            ErrorHandler.show_error_dialog(
-                "Помилка завантаження новин",
-                str(e)
-            )
+            #ErrorHandler.show_error_dialog(
+            #    "Помилка завантаження новин",
+            #    str(e)
+            #)
             return []
             
     def load_rules(self) -> dict:
@@ -840,7 +874,7 @@ class Application:
     def is_latest_version(self) -> bool:
         try:
             config = self.data_manager.load("data.json")
-            repo_url = config.get("github-repo")
+            repo_url = GITHUB_REPO #config.get("github-repo")
             if not repo_url:
                 return True
             

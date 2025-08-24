@@ -307,6 +307,7 @@ input, select {
 
 .settings input, .settings select {
     text-align: left;
+    padding: 8px;
 }
 
 .settings input:focus, .settings select:focus {
@@ -320,6 +321,7 @@ input[type="checkbox"] {
 
 /* Налаштування */
 details {
+    font-size: 14px;
     width: 100%;
     background: #f8f0e3;
     border: 2px solid #a57c55;

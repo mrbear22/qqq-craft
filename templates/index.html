@@ -118,7 +118,7 @@
             <h1>Вхід</h1>
             
             <form method="post">
-                <input type="text" id="nickname" name="nickname" placeholder="Ваш нікнейм" 
+                <input type="text" id="nickname" name="nickname" placeholder="Joseph" 
                        value="{% if data and data.nickname %}{{ data.nickname }}{% endif %}" required>
 
                 <details>
@@ -142,7 +142,7 @@
 
                         <label>
                             <input type="checkbox" name="multiplayer" {% if not data or data.multiplayer %}checked{% endif %}>
-                            Мультиплеєр
+                            Вхід на сервер
                         </label>
 
                         <label>

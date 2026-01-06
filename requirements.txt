@@ -1,7 +1,10 @@
-requests
-flask
-packaging
-minecraft-launcher-lib
-pywebview
-websockets
-markdown
+# QQQ-CRAFT Launcher Dependencies
+Flask>=2.3.0
+pywebview>=4.4.0
+minecraft-launcher-lib>=6.4
+requests>=2.31.0
+websockets>=11.0
+tkinter
+markdown>=3.4.0
+packaging>=23.0
+psutil>=5.9.0

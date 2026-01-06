@@ -10,15 +10,8 @@
 </head>
 <body>
     <div class="container">
-        <!-- Вкладки -->
         <div class="content-section">
-        <!--    <div class="tabs">
-                <button class="tab-button active" onclick="switchTab('news')">Новини</button>
-                <button class="tab-button" onclick="switchTab('rules')">Правила сервера</button>
-            </div>
-        -->    
             <div class="tab-content">
-                <!-- Вкладка Новини -->
                 <div id="news-tab" class="tab-pane active">
                     {% if news %}
                         <div class="news-list">
@@ -57,69 +50,26 @@
                         <p class="no-content">Новини недоступні</p>
                     {% endif %}
                 </div>
-
-                <!-- Вкладка Правила -->
-                <div id="rules-tab" class="tab-pane">
-                    <div class="rules-content">
-                        {% if rules %}
-                            <div class="rules-text">
-                                <!-- Заголовок -->
-                                {% if rules.title %}
-                                    <h1>{{ rules.title }}</h1>
-                                {% endif %}
-                                
-                                <!-- Правила -->
-                                {% if rules.rules %}
-                                    {% for rule in rules.rules %}
-                                        <div class="rule-item">
-                                            <h2>
-                                                {% if rule.icon %}
-                                                    <span class="rule-icon">{{ rule.icon | safe }}</span>
-                                                {% endif %}
-                                                {{ rule.title }}
-                                            </h2>
-                                            {% if rule.description %}
-                                                <div class="rule-description">{{ rule.description | safe }}</div>
-                                            {% endif %}
-                                            {% if rule.details %}
-                                                <div class="rule-details">{{ rule.details | safe }}</div>
-                                            {% endif %}
-                                        </div>
-                                    {% endfor %}
-                                {% endif %}
-                                
-                                <!-- Санкції -->
-                                {% if rules.sanctions %}
-                                    <div class="sanctions-section">
-                                        <h2>⚖️ {{ rules.sanctions.title }}</h2>
-                                        {% if rules.sanctions.items %}
-                                            <div class="sanctions-list">
-                                                {% for item in rules.sanctions.items %}
-                                                    <div class="sanction-item">
-                                                        <strong>{{ item.type }}</strong> {{ item.description }}
-                                                    </div>
-                                                {% endfor %}
-                                            </div>
-                                        {% endif %}
-                                    </div>
-                                {% endif %}
-                            </div>
-                        {% else %}
-                            <div class="error">Не вдалося завантажити правила сервера</div>
-                        {% endif %}
-                    </div>
-                </div>
             </div>
         </div>
 
-        <!-- Панель запуску -->
         <div class="launcher">
             <img src="/static/logo.png" alt="QQQ Logo" class="logo">
-            <h1>Вхід</h1>
+            <h1>Вітаємо!</h1>
             
             <form method="post">
-                <input type="text" id="nickname" name="nickname" placeholder="Joseph" 
-                       value="{% if data and data.nickname %}{{ data.nickname }}{% endif %}" required>
+                <div id="microsoft-login">
+                    {% if has_microsoft_auth %}
+                        <div class="microsoft-user">
+                            <span>Увійшли як: <strong>{{ data.microsoft_name }}</strong></span>
+                            <button type="button" onclick="microsoftLogout()">Вийти</button>
+                        </div>
+                    {% else %}
+                        <button type="button" onclick="microsoftAuth()" class="microsoft-btn">
+                            Увійти через Microsoft
+                        </button>
+                    {% endif %}
+                </div>
 
                 <details>
                     <summary>Налаштування</summary>
@@ -133,6 +83,7 @@
                             <option value="2G" {% if data and data.ram == '2G' %}selected{% endif %}>2GB RAM</option>
                             <option value="4G" {% if data and data.ram == '4G' %}selected{% endif %}>4GB RAM</option>
                             <option value="8G" {% if data and data.ram == '8G' %}selected{% endif %}>8GB RAM</option>
+                            <option value="16G" {% if data and data.ram == '16G' %}selected{% endif %}>16GB RAM</option>
                         </select>
 
                         <select name="windowSize" id="windowSize">
@@ -145,9 +96,19 @@
                             Вхід на сервер
                         </label>
 
+                       <label style="display:none;">
+                            <input type="checkbox" name="fullscreen" {% if not data or data.fullscreen %}checked{% endif %}>
+                            Повноекранний режим
+                        </label>
+
                         <label>
                             <input type="checkbox" name="console" {% if not data or data.console %}checked{% endif %}>
                             Консоль
+                        </label>
+						
+						<label>
+                            <input type="checkbox" name="skipsync" {% if not data or data.skipsync %}checked{% endif %}>
+                            Пропустити звірку файлів
                         </label>
 
                         <button type="button" onclick="openGameFolder()">📂 Папка гри</button>
@@ -160,7 +121,7 @@
 
                 {% if is_latest_version == False %}
                     <div class="update-notice">
-                        Доступна нова версія! <a href="#" onclick="fetch('/update')">Оновити</a>
+                        Доступна нова версія! <a href="/external_link/https://qqq-craft.top/game/">Оновити</a>
                     </div>
                 {% endif %}
             </form>
@@ -189,17 +150,47 @@
             document.getElementById("start").disabled = state;
         }
 
-        // Функції для вкладок
-        function switchTab(tabName) {
-            // Приховуємо всі вкладки
-            document.querySelectorAll('.tab-pane').forEach(tab => tab.classList.remove('active'));
-            document.querySelectorAll('.tab-button').forEach(btn => btn.classList.remove('active'));
-            
-            // Показуємо вибрану вкладку
-            document.getElementById(tabName + '-tab').classList.add('active');
-            document.querySelector(`[onclick="switchTab('${tabName}')"]`).classList.add('active');
+		function microsoftAuth() {
+			const btn = document.querySelector('.microsoft-btn');
+			fetch('/microsoft_login', {
+				method: 'POST',
+				headers: {'Content-Type': 'application/json'},
+				body: JSON.stringify({})
+			})
+			.then(res => res.json())
+			.then(data => {
+				if (data.success) {
+				
+				} else {
+					alert('Помилка: ' + data.error);
+					btn.disabled = false;
+					btn.textContent = 'Увійти через Microsoft';
+				}
+			})
+			.catch(err => {
+				alert('Помилка: ' + err.message);
+				btn.disabled = false;
+				btn.textContent = 'Увійти через Microsoft';
+			});
+		}
+
+        function microsoftLogout() {
+            if (confirm('Ви дійсно хочете вийти з Microsoft акаунту?')) {
+                fetch('/microsoft_logout', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'}
+                })
+                .then(res => res.json())
+                .then(data => {
+                    if (data.success) {
+                        location.reload();
+                    } else {
+                        alert('Помилка виходу: ' + data.error);
+                    }
+                });
+            }
         }
-		
+
         function openGameFolder() {
             const form = document.querySelector("form");
             const formData = new FormData(form);
@@ -210,27 +201,27 @@
             })
             .then(res => res.json())
             .then(data => {
-                if (data.success) {
-                    console.log("Папку відкрито");
-                } else {
-                    console.error(data.error);
+                if (!data.success) {
                     alert("❌ " + data.error);
                 }
-            })
-            .catch(err => {
-                console.error("Fetch error:", err);
-                alert("⚠️ Не вдалося надіслати запит");
             });
         }
 
         // WebSocket для логів
         const socket = new WebSocket("ws://127.0.0.1:5263");
         socket.onmessage = (e) => {
-            appendLog(e.data);
-            if (e.data.includes("Гра завершена") || e.data.includes("Процес завершено")) {
+            const message = e.data;
+            appendLog(message);
+            
+            if (message.includes("Гра завершена") || message.includes("Процес завершено")) {
                 setGameRunning(false);
                 setLoading(false);
             }
+			if (message.includes("auth_success")) {
+				window.location.reload();
+			}
+
+			
         };
 
         // Запуск гри
@@ -243,7 +234,9 @@
             const payload = Object.fromEntries(data.entries());
             payload.multiplayer = form.multiplayer.checked;
             payload.console = form.console.checked;
-
+            payload.skipsync = form.skipsync.checked;
+            payload.fullscreen = form.fullscreen.checked;
+			
             setLoading(true);
             fetch('/start', {
                 method: 'POST',

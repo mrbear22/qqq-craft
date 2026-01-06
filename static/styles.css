@@ -19,6 +19,25 @@ img {
     pointer-events: none;
 }
 
+button {
+    padding: 8px 12px;
+    background: #8b4513;
+    color: white;
+    border: none;
+    border-radius: 6px;
+    cursor: pointer;
+}
+
+button:hover {
+    background: #5e320f;
+}
+
+a {
+	text-decoration: none;
+	color: #333;
+	border-bottom: 2px solid #333;
+}
+
 /* Основний контейнер */
 .container {
     display: flex;

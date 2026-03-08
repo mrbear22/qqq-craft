@@ -5,4 +5,8 @@ launcher.spec
 qqq-craft.exe
 launcher.log
 compile_linux.py
-compile_linux.py
+/logs
+/__pycache__
+Certificate.pfx
+compile.iss
+version.txt

@@ -1,6 +1,5 @@
 """
 МОДУЛЬ МЕНЕДЖЕРА ЗАПУСКУ ТА АВТОРИЗАЦІЇ
-Містить класи для авторизації Microsoft та запуску Minecraft
 """
 
 import os
@@ -8,7 +7,6 @@ import time
 import uuid
 import logging
 import platform
-import threading
 import subprocess
 import webbrowser
 from typing import Dict, Optional, Callable
@@ -17,566 +15,413 @@ import minecraft_launcher_lib
 
 from .data_manager import PathManager, DataManager, Config
 
+log = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# AuthManager
+# ---------------------------------------------------------------------------
+
 class AuthManager:
     """Менеджер Microsoft авторизації"""
-    
+
     def __init__(self, data_manager: DataManager, client_id: str, redirect_url: str):
         self.data_manager = data_manager
         self.client_id = client_id
         self.redirect_url = redirect_url
-        self.logger = logging.getLogger(__name__)
-        
-        self.auth_state = None
-        self.auth_code_verifier = None
-        self.auth_completed = False
-        self.auth_success = False
-        self.auth_data = None
-    
-    def get_login_url(self):
+
+        self._state: Optional[str] = None
+        self._code_verifier: Optional[str] = None
+        self._auth_completed = False
+        self._auth_success = False
+        self._auth_data: Optional[Dict] = None
+
+    # ------------------------------------------------------------------
+
+    def get_login_url(self) -> tuple:
+        """Повертає (login_url, state, code_verifier) для Microsoft OAuth."""
+        return minecraft_launcher_lib.microsoft_account.get_secure_login_data(
+            self.client_id, self.redirect_url
+        )
+
+    def complete_login(self, auth_code: str, code_verifier: str) -> Dict:
         """
-        Отримує URL для Microsoft авторизації
-        
-        Returns:
-            tuple: (login_url, state, code_verifier)
+        Завершує авторизацію. Правильна сигнатура бібліотеки:
+          complete_login(client_id, redirect_uri, auth_code, code_verifier)
         """
-        try:
-            return minecraft_launcher_lib.microsoft_account.get_secure_login_data(
-                self.client_id, self.redirect_url
-            )
-        except Exception as e:
-            self.logger.error(f"Failed to get login URL: {e}")
-            return "", "", ""
-    
-    def complete_login(self, auth_code: str, state: str, code_verifier: str) -> Dict:
+        return minecraft_launcher_lib.microsoft_account.complete_login(
+            self.client_id, None, self.redirect_url, auth_code, code_verifier
+        ) or {}
+
+    def complete_refresh(self, refresh_token: str) -> Dict:
         """
-        Завершує Microsoft авторизацію
-        
-        Args:
-            auth_code: Код авторизації
-            state: State параметр
-            code_verifier: Code verifier для PKCE
-            
-        Returns:
-            Dict: Дані авторизації або порожній словник
+        Оновлює токен. Правильна сигнатура бібліотеки:
+          complete_refresh(client_id, client_secret|None, redirect_uri|None, refresh_token)
         """
-        try:
-            login_data = minecraft_launcher_lib.microsoft_account.complete_login(
-                self.client_id, None, self.redirect_url, auth_code, code_verifier
-            )
-            
-            if login_data and 'access_token' in login_data and 'name' in login_data:
-                return login_data
-            
-            return {}
-            
-        except Exception as e:
-            self.logger.error(f"Login completion failed: {e}")
-            return {}
-    
+        return minecraft_launcher_lib.microsoft_account.complete_refresh(
+            self.client_id, None, None, refresh_token
+        ) or {}
+
+    # ------------------------------------------------------------------
+
     def start_microsoft_auth(self) -> bool:
-        """
-        Запускає Microsoft авторизацію через браузер
-        
-        Returns:
-            bool: True якщо авторизація успішна
-        """
-        try:
-            login_url, state, code_verifier = self.get_login_url()
-            if not login_url:
-                self.logger.error("Failed to get login URL")
-                return False
-            
-            self.auth_state = state
-            self.auth_code_verifier = code_verifier
-            self.auth_completed = False
-            self.auth_success = False
-            self.auth_data = None
-            
-            self.logger.info("Opening browser for Microsoft authentication")
-
-            webbrowser.open(login_url)
-
-            timeout = 300
-            start_time = time.time()
-            
-            while not self.auth_completed:
-                if time.time() - start_time > timeout:
-                    self.logger.error("Authentication timeout")
-                    return False
-                time.sleep(0.5)
-            
-            return self.auth_success
-            
-        except Exception as e:
-            self.logger.error(f"Microsoft auth error: {e}")
+        """Відкриває браузер та чекає завершення авторизації (timeout 5 хв)."""
+        login_url, state, code_verifier = self.get_login_url()
+        if not login_url:
             return False
-    
+
+        self._state = state
+        self._code_verifier = code_verifier
+        self._auth_completed = False
+        self._auth_success = False
+
+        webbrowser.open(login_url)
+
+        deadline = time.time() + 300
+        while not self._auth_completed:
+            if time.time() > deadline:
+                log.error("Authentication timeout")
+                return False
+            time.sleep(0.5)
+
+        return self._auth_success
+
     def handle_auth_callback(self, auth_code: str, state: str) -> tuple[bool, str]:
         """
-        Обробляє callback з Flask route
-        
-        Args:
-            auth_code: Код авторизації з callback
-            state: State параметр
-            
-        Returns:
-            tuple: (success: bool, error_message: str)
+        Обробляє OAuth callback. Повертає (success, message).
+        Викликається з Flask route.
         """
         try:
-            if state != self.auth_state:
-                error_msg = f"Невірний state параметр"
-                self.logger.error(f"Invalid state parameter: expected {self.auth_state}, got {state}")
-                return False, error_msg
+            if state != self._state:
+                return False, "Невірний state параметр"
 
-            login_data = self.complete_login(auth_code, state, self.auth_code_verifier)
-            
-            if not login_data:
-                error_msg = "Не вдалося отримати дані від Microsoft"
-                self.logger.error(error_msg)
-                return False, error_msg
+            login_data = self.complete_login(auth_code, self._code_verifier)
+            if not login_data or "access_token" not in login_data:
+                return False, "Не вдалося отримати дані від Microsoft"
 
-            if self.save_auth_data(login_data):
-                self.auth_success = True
-                self.auth_data = login_data
-                self.logger.info(f"Authentication successful for user: {login_data.get('name')}")
-                return True, "Успішно"
-            else:
-                error_msg = "Не вдалося зберегти дані авторизації"
-                self.logger.error(error_msg)
-                return False, error_msg
-            
+            if not self.save_auth_data(login_data):
+                return False, "Не вдалося зберегти дані авторизації"
+
+            self._auth_data = login_data
+            self._auth_success = True
+            log.info(f"Auth successful: {login_data.get('name')}")
+            return True, "Успішно"
+
         except Exception as e:
-            error_msg = f"Помилка обробки авторизації: {str(e)}"
-            self.logger.error(f"Auth callback error: {e}")
-            return False, error_msg
+            log.error(f"Auth callback error: {e}")
+            return False, f"Помилка: {e}"
         finally:
-            self.auth_completed = True
-    
-    def save_auth_data(self, auth_data: Dict) -> bool:
-        """
-        Зберігає дані авторизації
-        
-        Args:
-            auth_data: Дані авторизації
-            
-        Returns:
-            bool: True якщо збереження успішне
-        """
-        try:
-            auth_data['saved_at'] = time.time()
-            return self.data_manager.save(auth_data, "auth.json")
-        except Exception as e:
-            self.logger.error(f"Failed to save auth data: {e}")
-            return False
-    
+            self._auth_completed = True
+
+    # ------------------------------------------------------------------
+
+    def save_auth_data(self, data: Dict) -> bool:
+        data["saved_at"] = time.time()
+        return self.data_manager.save(data, "auth.json")
+
     def load_auth_data(self) -> Dict:
-        """
-        Завантажує збережені дані авторизації
-        
-        Returns:
-            Dict: Дані авторизації або порожній словник
-        """
-        try:
-            return self.data_manager.load("auth.json")
-        except Exception as e:
-            self.logger.error(f"Failed to load auth data: {e}")
-            return {}
-    
+        return self.data_manager.load("auth.json")
+
     def clear_auth_data(self) -> bool:
-        """
-        Видаляє збережені дані авторизації
-        
-        Returns:
-            bool: True якщо видалення успішне
-        """
-        try:
-            return self.data_manager.delete_file("auth.json")
-        except Exception as e:
-            self.logger.error(f"Failed to clear auth data: {e}")
-            return False
-    
+        return self.data_manager.delete_file("auth.json")
+
+    # ------------------------------------------------------------------
+
     def is_token_valid(self, auth_data: Dict) -> bool:
-        """Перевіряє чи токен дійсний (не застарів)"""
-        try:
-            if not auth_data or 'access_token' not in auth_data:
-                return False
-
-            saved_at = auth_data.get('saved_at', 0)
-            if time.time() - saved_at > 23 * 3600:  # 23 години
-                self.logger.info("Auth token expired")
-                return False
-
-            required_fields = ['access_token', 'name', 'id']
-            for field in required_fields:
-                if field not in auth_data:
-                    self.logger.error(f"Missing required field: {field}")
-                    return False
-            
-            return True
-            
-        except Exception as e:
-            self.logger.error(f"Token validation error: {e}")
+        if not auth_data:
             return False
-    
-    def refresh_token(self, auth_data: Dict) -> Optional[Dict]:
-        """Оновлює токен через refresh_token"""
-        try:
-            if 'refresh_token' not in auth_data:
-                self.logger.error("No refresh token available")
-                return None
-            
-            self.logger.info("Refreshing authorization token...")
+        if time.time() - auth_data.get("saved_at", 0) > 23 * 3600:
+            return False
+        return all(k in auth_data for k in ("access_token", "name", "id"))
 
-            refreshed_data = minecraft_launcher_lib.microsoft_account.complete_refresh(
-                self.client_id,
-                None,  # client_secret (deprecated, не використовується)
-                self.redirect_url,
-                auth_data['refresh_token']
-            )
-            
-            if refreshed_data and 'access_token' in refreshed_data:
-                refreshed_data['saved_at'] = time.time()
-                
-                if self.save_auth_data(refreshed_data):
-                    self.logger.info("Token refreshed successfully")
-                    return refreshed_data
-                else:
-                    self.logger.error("Failed to save refreshed token")
-                    
+    def ensure_valid_token(self) -> Optional[Dict]:
+        """
+        Повертає валідні auth_data (з авто-оновленням якщо потрібно).
+        Повертає None якщо токен недійсний і оновлення не вдалося.
+        """
+        auth_data = self.load_auth_data()
+        if not auth_data:
+            return None
+
+        if self.is_token_valid(auth_data):
+            return auth_data
+
+        log.info("Token expired, refreshing...")
+        try:
+            refreshed = self.complete_refresh(auth_data["refresh_token"])
+            if refreshed and "access_token" in refreshed:
+                self.save_auth_data(refreshed)
+                return refreshed
+        except minecraft_launcher_lib.exceptions.InvalidRefreshToken:
+            log.warning("Refresh token invalid — re-login required")
         except Exception as e:
-            self.logger.error(f"Token refresh failed: {e}")
-        
+            log.error(f"Token refresh failed: {e}")
+
         return None
-        
-    def auto_refresh_token_if_needed(self) -> bool:
+
+
+# ---------------------------------------------------------------------------
+# JavaRuntimeManager
+# ---------------------------------------------------------------------------
+
+class JavaRuntimeManager:
+    """Завантаження та перевірка Java runtime у папці гри"""
+
+    def __init__(self, path_manager: PathManager):
+        self.path_manager = path_manager
+
+    def get_java_path(self, runtime_name: str, minecraft_dir: str) -> Optional[str]:
+        """Повертає шлях до java якщо runtime встановлений, інакше None."""
+        path = minecraft_launcher_lib.runtime.get_executable_path(runtime_name, minecraft_dir)
+        return path if path and os.path.isfile(path) else None
+
+    def install_runtime(
+        self,
+        runtime_name: str,
+        minecraft_dir: str,
+        on_progress: Optional[Callable] = None,
+    ) -> bool:
+        """Встановлює JVM runtime. Повертає True якщо успішно."""
+        log.info(f"Installing runtime '{runtime_name}'...")
+        if on_progress:
+            on_progress(f"Завантаження Java ({runtime_name})...")
+
+        callback = {
+            "setStatus":   lambda s: on_progress(f"Java: {s}") if on_progress else None,
+            "setProgress": lambda n: on_progress(f"Java: {n} файлів") if on_progress else None,
+            "setMax":      lambda _: None,
+        }
+
+        minecraft_launcher_lib.runtime.install_jvm_runtime(
+            runtime_name, minecraft_dir, callback=callback
+        )
+
+        return self.get_java_path(runtime_name, minecraft_dir) is not None
+
+    def ensure_runtime(
+        self,
+        runtime_name: str,
+        minecraft_dir: str,
+        on_progress: Optional[Callable] = None,
+    ) -> Optional[str]:
         """
-        Автоматично оновлює токен якщо потрібно.
-        Викликається один раз при старті програми.
-        
-        Returns:
-            bool: True якщо токен валідний (оновлений або ще не застарів)
+        Повертає шлях до java, встановлює runtime якщо відсутній.
+        Повертає None при помилці.
         """
+        java_path = self.get_java_path(runtime_name, minecraft_dir)
+        if java_path:
+            return java_path
+
+        if not self.install_runtime(runtime_name, minecraft_dir, on_progress):
+            log.error(f"Failed to install runtime '{runtime_name}'")
+            return None
+
+        return self.get_java_path(runtime_name, minecraft_dir)
+
+    def get_required_runtime(version_id: str) -> str:
+        """
+        Повертає назву Java runtime для version_id.
+        Спочатку намагається прочитати з локального version.json,
+        і лише тоді — парсить версію вручну як fallback.
+        """
+        # Пробуємо отримати runtime з вже встановленого version.json
         try:
-            auth_data = self.load_auth_data()
+            info = minecraft_launcher_lib.runtime.get_version_runtime_information(version_id)
+            if info and info.get("name"):
+                return info["name"]
+        except Exception:
+            pass
 
-            if not auth_data:
-                self.logger.info("No auth data found")
-                return False
+        # Fallback: парсимо версію вручну
+        try:
+            numeric = version_id
+            for prefix in ("fabric-loader-", "forge-", "quilt-loader-"):
+                if prefix in numeric:
+                    numeric = numeric.split("-")[-1]
+                    break
 
-            if self.is_token_valid(auth_data):
-                self.logger.info("Token is still valid")
-                return True
+            parts = numeric.split(".")
+            major = int(parts[0]) if parts[0].isdigit() else 1
+            minor = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else 0
+            patch = int(parts[2]) if len(parts) > 2 and parts[2].isdigit() else 0
 
-            self.logger.info("Token expired, attempting refresh...")
-            refreshed_data = self.refresh_token(auth_data)
-            
-            if refreshed_data:
-                self.logger.info("Token auto-refresh successful")
-                return True
-            else:
-                self.logger.warning("Token refresh failed - user needs to login again")
-                return False
-                
-        except Exception as e:
-            self.logger.error(f"Auto refresh error: {e}")
-            return False
+            if (major, minor, patch) >= (1, 20, 5):
+                return "java-runtime-delta"
+            if (major, minor) >= (1, 17):
+                return "java-runtime-gamma"
+            return "jre-legacy"
+        except Exception:
+            return "java-runtime-gamma"
+
+
+# ---------------------------------------------------------------------------
+# MinecraftLauncher
+# ---------------------------------------------------------------------------
 
 class MinecraftLauncher:
-    """Клас для запуску Minecraft"""
-    
-    def __init__(self, path_manager: PathManager, auth_manager: AuthManager):
+    """Запуск Minecraft"""
+
+    def __init__(
+        self,
+        path_manager: PathManager,
+        auth_manager: AuthManager,
+        java_manager: Optional[JavaRuntimeManager] = None,
+    ):
         self.path_manager = path_manager
         self.auth_manager = auth_manager
-        self.logger = logging.getLogger(__name__)
+        self.java_manager = java_manager or JavaRuntimeManager(path_manager)
         self.is_windows = platform.system() == "Windows"
-    
+
     @staticmethod
     def generate_offline_uuid(nickname: str) -> str:
+        namespace = uuid.UUID("00000000-0000-0000-0000-000000000000")
+        return str(uuid.uuid3(namespace, f"OfflinePlayer:{nickname}"))
+
+    def launch(self, config: Config, on_progress: Optional[Callable] = None) -> bool:
         """
-        Генерує UUID для офлайн режиму
-        
-        Args:
-            nickname: Нікнейм гравця
-            
-        Returns:
-            str: UUID
+        Запускає Minecraft. Повертає True якщо запуск успішний.
+
+        Послідовність:
+          1. Перевірка папки інстансу
+          2. Авторизація (з авто-оновленням токена)
+          3. Java runtime (з авто-встановленням)
+          4. Генерація та виконання команди
         """
-        try:
-            namespace = uuid.UUID('00000000-0000-0000-0000-000000000000')
-            return str(uuid.uuid3(namespace, f"OfflinePlayer:{nickname}"))
-        except Exception as e:
-            logging.getLogger(__name__).error(f"UUID generation error: {e}")
-            return str(uuid.uuid4())
-    
-    def prepare_launch_options(self, config: Config) -> Dict:
-        """
-        Підготовляє опції для запуску Minecraft
-        
-        Args:
-            config: Конфігурація гри
-            
-        Returns:
-            Dict: Опції запуску
-        """
+        def progress(msg: str):
+            log.info(msg)
+            if on_progress:
+                on_progress(msg)
+
         install_dir = self.path_manager.get_install_dir(config.loader)
 
+        # 1. Папка
+        if not install_dir.exists():
+            progress(f"Папка гри не знайдена: {install_dir}")
+            return False
+
+        progress("Підготовка до запуску...")
+
+        # 2. Авторизація
+        auth_data = self.auth_manager.ensure_valid_token()
+        if not auth_data:
+            progress("Помилка авторизації — увійдіть знову")
+            return False
+
+        # 3. Java runtime
+        runtime_name = self.java_manager.get_required_runtime(config.loader)
+        java_path = self.java_manager.ensure_runtime(
+            runtime_name, str(install_dir), on_progress
+        )
+        if not java_path:
+            progress("Не вдалося підготувати Java")
+            return False
+
+
         try:
-            width, height = config.window_size.split('x')
+            width, height = config.window_size.split("x")
             width, height = int(width), int(height)
         except (ValueError, AttributeError):
             width, height = 1280, 720
 
-        options = {
-            "gameDirectory": str(install_dir),
-            "jvmArguments": [f"-Xmx{config.ram}"],
-            "launcherName": "QQQ-Launcher",
-            "launcherVersion": "1.0.24.0",
+        options: Dict = {
+            "username":         auth_data["name"],
+            "uuid":             auth_data["id"],
+            "token":            auth_data["access_token"],
+            "gameDirectory":    str(install_dir),
+            "executablePath":   java_path,
+            "jvmArguments":     [f"-Xmx{config.ram}"],
+            "launcherName":     "QQQ-Launcher",
+            "launcherVersion":  "1.0.24.0",
             "customResolution": not config.fullscreen,
-            "resolutionWidth": str(width),
+            "resolutionWidth":  str(width),
             "resolutionHeight": str(height),
-            "fullscreen": config.fullscreen,
+            "fullscreen":       config.fullscreen,
         }
-        
-        return options
-    
-    def setup_authentication(self, options: Dict) -> bool:
-        """Налаштовує авторизацію для запуску"""
-        auth_data = self.auth_manager.load_auth_data()
 
-        if not self.auth_manager.is_token_valid(auth_data):
-            self.logger.info("Token expired during launch, attempting refresh...")
-            
-            refreshed_data = self.auth_manager.refresh_token(auth_data)
-            if refreshed_data:
-                auth_data = refreshed_data
-            else:
-                self.logger.error("Token refresh failed - authentication required")
-                return False
-
-        options.update({
-            "username": auth_data["name"],
-            "uuid": auth_data["id"],
-            "token": auth_data["access_token"]
-        })
-        
-        return True
-    
-    def setup_multiplayer(self, config: Config, options: Dict):
-        """
-        Налаштовує параметри мультиплеєра
-        
-        Args:
-            config: Конфігурація гри
-            options: Словник опцій запуску (модифікується)
-        """
         if config.multiplayer:
             options["quickPlayMultiplayer"] = "play.qqq-craft.top"
-    
-    def get_launch_command(self, config: Config, options: Dict) -> list:
-        """
-        Генерує команду для запуску Minecraft
-        
-        Args:
-            config: Конфігурація гри
-            options: Опції запуску
-            
-        Returns:
-            list: Команда запуску
-        """
-        install_dir = self.path_manager.get_install_dir(config.loader)
-        
-        return minecraft_launcher_lib.command.get_minecraft_command(
+
+        command = minecraft_launcher_lib.command.get_minecraft_command(
             config.loader, str(install_dir), options
         )
-    
-    def launch(self, config: Config, progress_callback: Optional[Callable] = None) -> bool:
-        """
-        Запускає Minecraft
-        
-        Args:
-            config: Конфігурація гри
-            progress_callback: Функція для повідомлень про прогрес
-            
-        Returns:
-            bool: True якщо запуск успішний
-        """
-        try:
-            install_dir = self.path_manager.get_install_dir(config.loader)
-            
-            if not install_dir.exists():
-                error_msg = f"Папка гри не знайдена: {install_dir}"
-                self.logger.error(error_msg)
-                if progress_callback:
-                    progress_callback(error_msg)
-                return False
-            
-            if progress_callback:
-                progress_callback("Підготовка до запуску...")
 
-            options = self.prepare_launch_options(config)
+        stdout = stderr = subprocess.DEVNULL if not config.console else None
 
-            if not self.setup_authentication(options):
-                error_msg = "Помилка авторизації"
-                if progress_callback:
-                    progress_callback(error_msg)
-                return False
+        process = subprocess.Popen(
+            command,
+            cwd=str(install_dir),
+            stdout=stdout,
+            stderr=stderr,
+        )
 
-            self.setup_multiplayer(config, options)
-            
-            if progress_callback:
-                progress_callback("Генерація команди запуску...")
+        log.info(
+            f"Launched — PID: {process.pid} | {config.loader} | "
+            f"{config.ram} | {config.window_size}"
+        )
+        progress("Гру запущено!")
+        return True
 
-            command = self.get_launch_command(config, options)
-            
-            if progress_callback:
-                progress_callback("Запуск гри...")
+    # ------------------------------------------------------------------
 
-            creation_flags = 0
-            stdout = stderr = None
-            
-            if self.is_windows and not config.console:
-                creation_flags = subprocess.CREATE_NO_WINDOW
-                stdout = stderr = subprocess.DEVNULL
-            elif not config.console:
-                stdout = stderr = subprocess.DEVNULL
-
-            process = subprocess.Popen(
-                command,
-                cwd=str(install_dir),
-                creationflags=creation_flags,
-                stdout=stdout,
-                stderr=stderr
-            )
-
-            self.logger.info(f"Minecraft launched successfully with PID: {process.pid}")
-            self.logger.info(f"Loader: {config.loader}, RAM: {config.ram}, Resolution: {config.window_size}")
-            
-            if progress_callback:
-                progress_callback("Гру запущено успішно!")
-            
-            return True
-            
-        except Exception as e:
-            self.logger.error(f"Launch failed: {e}")
-            error_msg = f"Помилка запуску: {e}"
-            if progress_callback:
-                progress_callback(error_msg)
-            return False
-    
     def is_minecraft_running(self) -> bool:
-        """
-        Перевіряє чи запущений Minecraft
-        
-        Returns:
-            bool: True якщо Minecraft запущений
-        """
         try:
             if self.is_windows:
                 import psutil
-                for proc in psutil.process_iter(['pid', 'name']):
-                    if 'java' in proc.info['name'].lower():
-                        return True
-            else:
-                result = subprocess.run(['pgrep', '-f', 'java.*minecraft'], 
-                                      capture_output=True, text=True)
-                return result.returncode == 0
+                return any("java" in p.info["name"].lower()
+                           for p in psutil.process_iter(["name"]))
+            result = subprocess.run(
+                ["pgrep", "-f", "java.*minecraft"], capture_output=True
+            )
+            return result.returncode == 0
         except Exception as e:
-            self.logger.error(f"Failed to check if Minecraft is running: {e}")
-        
-        return False
-    
-    def kill_minecraft_processes(self):
-        """Завершує всі процеси Minecraft"""
+            log.error(f"is_minecraft_running error: {e}")
+            return False
+
+    def kill_minecraft(self):
         try:
             if self.is_windows:
-                subprocess.run(['taskkill', '/F', '/IM', 'java.exe'], 
-                              capture_output=True)
+                subprocess.run(["taskkill", "/F", "/IM", "java.exe"], capture_output=True)
             else:
-                subprocess.run(['pkill', '-f', 'java.*minecraft'], 
-                              capture_output=True)
-            self.logger.info("Minecraft processes terminated")
+                subprocess.run(["pkill", "-f", "java.*minecraft"], capture_output=True)
         except Exception as e:
-            self.logger.error(f"Failed to kill Minecraft processes: {e}")
+            log.error(f"kill_minecraft error: {e}")
 
+
+# ---------------------------------------------------------------------------
+# GameProfileManager
+# ---------------------------------------------------------------------------
 
 class GameProfileManager:
     """Менеджер профілів гри"""
-    
+
     def __init__(self, data_manager: DataManager):
         self.data_manager = data_manager
-        self.logger = logging.getLogger(__name__)
-    
-    def save_profile(self, profile_name: str, config: Config) -> bool:
-        """
-        Зберігає профіль гри
-        
-        Args:
-            profile_name: Назва профілю
-            config: Конфігурація для збереження
-            
-        Returns:
-            bool: True якщо збереження успішне
-        """
-        try:
-            profiles = self.load_all_profiles()
-            profiles[profile_name] = {
-                'loader': config.loader,
-                'ram': config.ram,
-                'window_size': config.window_size,
-                'multiplayer': config.multiplayer,
-                'console': config.console,
-                'fullscreen': config.fullscreen,
-                'created_at': time.time()
-            }
-            
-            return self.data_manager.save(profiles, "profiles.json")
-            
-        except Exception as e:
-            self.logger.error(f"Failed to save profile {profile_name}: {e}")
-            return False
-    
-    def load_profile(self, profile_name: str) -> Optional[Dict]:
-        """
-        Завантажує профіль гри
-        
-        Args:
-            profile_name: Назва профілю
-            
-        Returns:
-            Dict або None: Дані профілю або None якщо не знайдено
-        """
-        try:
-            profiles = self.load_all_profiles()
-            return profiles.get(profile_name)
-        except Exception as e:
-            self.logger.error(f"Failed to load profile {profile_name}: {e}")
-            return None
-    
-    def load_all_profiles(self) -> Dict:
-        """
-        Завантажує всі профілі
-        
-        Returns:
-            Dict: Словник з профілями
-        """
+
+    def _load(self) -> Dict:
         return self.data_manager.load("profiles.json")
-    
-    def delete_profile(self, profile_name: str) -> bool:
-        """
-        Видаляє профіль
-        
-        Args:
-            profile_name: Назва профілю
-            
-        Returns:
-            bool: True якщо видалення успішне
-        """
-        try:
-            profiles = self.load_all_profiles()
-            if profile_name in profiles:
-                del profiles[profile_name]
-                return self.data_manager.save(profiles, "profiles.json")
-            return True
-        except Exception as e:
-            self.logger.error(f"Failed to delete profile {profile_name}: {e}")
-            return False
+
+    def _save(self, profiles: Dict) -> bool:
+        return self.data_manager.save(profiles, "profiles.json")
+
+    def save_profile(self, name: str, config: Config) -> bool:
+        profiles = self._load()
+        profiles[name] = {
+            "loader":      config.loader,
+            "ram":         config.ram,
+            "window_size": config.window_size,
+            "multiplayer": config.multiplayer,
+            "console":     config.console,
+            "fullscreen":  config.fullscreen,
+            "created_at":  time.time(),
+        }
+        return self._save(profiles)
+
+    def load_profile(self, name: str) -> Optional[Dict]:
+        return self._load().get(name)
+
+    def delete_profile(self, name: str) -> bool:
+        profiles = self._load()
+        profiles.pop(name, None)
+        return self._save(profiles)
+
+    def list_profiles(self) -> list:
+        return list(self._load().keys())

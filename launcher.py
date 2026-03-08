@@ -31,7 +31,7 @@ from modules.data_manager import DataManager, PathManager, Config, Validator
 from modules.download_manager import ModpacksManager
 from modules.launch_manager import MinecraftLauncher, AuthManager
 
-VERSION = "1.0.26.0"
+VERSION = "1.0.27.0"
 FLASK_PORT = 6724
 WEBSOCKET_PORT = 5263
 
@@ -147,12 +147,14 @@ class Application:
     def __init__(self):
         try:
             import logging
+            logs_dir = Path("logs")
+            logs_dir.mkdir(exist_ok=True)
             logging.basicConfig(
                 level=logging.INFO,
                 format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
                 handlers=[
                     logging.StreamHandler(),
-                    logging.FileHandler('launcher.log', encoding='utf-8')
+                    logging.FileHandler(logs_dir / 'log.log', encoding='utf-8')
                 ]
             )
             self.logger = logging.getLogger(__name__)
@@ -167,7 +169,7 @@ class Application:
             self.window = None
             
             self.logger.info("Checking authentication status...")
-            self.auth_manager.auto_refresh_token_if_needed()
+            self.auth_manager.ensure_valid_token()
             
             self.app = Flask(__name__)
             self.setup_routes()
@@ -527,6 +529,10 @@ class Application:
                 str(e)
             )
     
+    def is_already_running() -> bool:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            return s.connect_ex(('127.0.0.1', FLASK_PORT)) == 0
+
     def run(self):
         try:
             threading.Thread(target=self.run_flask, daemon=True).start()
@@ -553,6 +559,10 @@ class Application:
 def main():
     try:
         app = Application()
+
+        if app.is_already_running():
+            messagebox.showinfo("QQQ-CRAFT", "Лаунчер вже запущений!")
+            sys.exit(0)
 
         if not app.is_latest_version():
             try:

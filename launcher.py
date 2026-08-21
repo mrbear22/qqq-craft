@@ -13,7 +13,7 @@ import traceback
 from pathlib import Path
 from typing import Dict, Any
 from dataclasses import dataclass, asdict
-
+import socket
 import requests
 import tkinter as tk
 from tkinter import messagebox
@@ -528,10 +528,6 @@ class Application:
                 "Помилка запуску WebSocket сервера",
                 str(e)
             )
-    
-    def is_already_running() -> bool:
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-            return s.connect_ex(('127.0.0.1', FLASK_PORT)) == 0
 
     def run(self):
         try:
@@ -556,13 +552,15 @@ class Application:
             )
             sys.exit(1)
 
-def main():
-    try:
-        app = Application()
 
-        if app.is_already_running():
+def main():
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        if s.connect_ex(('127.0.0.1', FLASK_PORT)) == 0:
             messagebox.showinfo("QQQ-CRAFT", "Лаунчер вже запущений!")
             sys.exit(0)
+            
+    try:
+        app = Application()
 
         if not app.is_latest_version():
             try:

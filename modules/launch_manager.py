@@ -3,6 +3,7 @@
 """
 
 import os
+import re
 import time
 import uuid
 import logging
@@ -186,16 +187,19 @@ class JavaRuntimeManager:
             on_progress(f"Завантаження Java ({runtime_name})...")
 
         callback = {
-            "setStatus":   lambda s: on_progress(f"Java: {s}") if on_progress else None,
-            "setProgress": lambda n: on_progress(f"Java: {n} файлів") if on_progress else None,
+            "setStatus":   lambda s: on_progress(f"Завантаження Java: {s}") if on_progress else None,
+            "setProgress": lambda n: on_progress(f"Завантаження Java: {n} файлів") if on_progress else None,
             "setMax":      lambda _: None,
         }
 
-        minecraft_launcher_lib.runtime.install_jvm_runtime(
-            runtime_name, minecraft_dir, callback=callback
-        )
-
-        return self.get_java_path(runtime_name, minecraft_dir) is not None
+        try:
+            minecraft_launcher_lib.runtime.install_jvm_runtime(
+                runtime_name, minecraft_dir, callback=callback
+            )
+            return self.get_java_path(runtime_name, minecraft_dir) is not None
+        except Exception as e:
+            log.error(f"Failed to install Java runtime {runtime_name}: {e}")
+            return False
 
     def ensure_runtime(
         self,
@@ -205,7 +209,6 @@ class JavaRuntimeManager:
     ) -> Optional[str]:
         """
         Повертає шлях до java, встановлює runtime якщо відсутній.
-        Повертає None при помилці.
         """
         java_path = self.get_java_path(runtime_name, minecraft_dir)
         if java_path:
@@ -217,40 +220,26 @@ class JavaRuntimeManager:
 
         return self.get_java_path(runtime_name, minecraft_dir)
 
+    @staticmethod
     def get_required_runtime(version_id: str) -> str:
-        """
-        Повертає назву Java runtime для version_id.
-        Спочатку намагається прочитати з локального version.json,
-        і лише тоді — парсить версію вручну як fallback.
-        """
-        # Пробуємо отримати runtime з вже встановленого version.json
         try:
             info = minecraft_launcher_lib.runtime.get_version_runtime_information(version_id)
             if info and info.get("name"):
                 return info["name"]
-        except Exception:
-            pass
-
-        # Fallback: парсимо версію вручну
-        try:
-            numeric = version_id
-            for prefix in ("fabric-loader-", "forge-", "quilt-loader-"):
-                if prefix in numeric:
-                    numeric = numeric.split("-")[-1]
-                    break
-
-            parts = numeric.split(".")
-            major = int(parts[0]) if parts[0].isdigit() else 1
-            minor = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else 0
-            patch = int(parts[2]) if len(parts) > 2 and parts[2].isdigit() else 0
-
-            if (major, minor, patch) >= (1, 20, 5):
-                return "java-runtime-delta"
-            if (major, minor) >= (1, 17):
-                return "java-runtime-gamma"
-            return "jre-legacy"
-        except Exception:
-            return "java-runtime-gamma"
+        except Exception as e:
+            log.warning(f"Could not fetch runtime info from manifest for {version_id}: {e}")
+        match = re.search(r'(\d+)\.(\d+)', version_id)
+        if match:
+            major = int(match.group(1))
+            if major >= 26:
+                return "java-runtime-epsilon"  # Java 25
+            elif major == 1:
+                minor = int(match.group(2))
+                if minor >= 20:
+                    return "java-runtime-delta"  # Java 21
+                if minor >= 18:
+                    return "java-runtime-gamma"  # Java 17
+        return "java-runtime-epsilon"
 
 
 # ---------------------------------------------------------------------------
@@ -277,15 +266,6 @@ class MinecraftLauncher:
         return str(uuid.uuid3(namespace, f"OfflinePlayer:{nickname}"))
 
     def launch(self, config: Config, on_progress: Optional[Callable] = None) -> bool:
-        """
-        Запускає Minecraft. Повертає True якщо запуск успішний.
-
-        Послідовність:
-          1. Перевірка папки інстансу
-          2. Авторизація (з авто-оновленням токена)
-          3. Java runtime (з авто-встановленням)
-          4. Генерація та виконання команди
-        """
         def progress(msg: str):
             log.info(msg)
             if on_progress:
@@ -293,20 +273,17 @@ class MinecraftLauncher:
 
         install_dir = self.path_manager.get_install_dir(config.loader)
 
-        # 1. Папка
         if not install_dir.exists():
             progress(f"Папка гри не знайдена: {install_dir}")
             return False
 
         progress("Підготовка до запуску...")
 
-        # 2. Авторизація
         auth_data = self.auth_manager.ensure_valid_token()
         if not auth_data:
             progress("Помилка авторизації — увійдіть знову")
             return False
 
-        # 3. Java runtime
         runtime_name = self.java_manager.get_required_runtime(config.loader)
         java_path = self.java_manager.ensure_runtime(
             runtime_name, str(install_dir), on_progress
@@ -314,8 +291,16 @@ class MinecraftLauncher:
         if not java_path:
             progress("Не вдалося підготувати Java")
             return False
+        versions_dir = install_dir / "versions"
+        loader_dir = versions_dir / config.loader
+        loader_json = loader_dir / f"{config.loader}.json"
+        loader_jar = loader_dir / f"{config.loader}.jar"
 
-
+        if "-" in config.loader:
+            base_version = config.loader.split("-")[-1]
+            base_dir = versions_dir / base_version
+            base_json = base_dir / f"{base_version}.json"
+            base_jar = base_dir / f"{base_version}.jar"
         try:
             width, height = config.window_size.split("x")
             width, height = int(width), int(height)
@@ -340,23 +325,30 @@ class MinecraftLauncher:
         if config.multiplayer:
             options["quickPlayMultiplayer"] = "play.qqq-craft.top"
 
-        command = minecraft_launcher_lib.command.get_minecraft_command(
-            config.loader, str(install_dir), options
-        )
+        # Формуємо команду
+        try:
+            command = minecraft_launcher_lib.command.get_minecraft_command(
+                config.loader, str(install_dir), options
+            )
+        except Exception as e:
+            log.error(f"❌ Помилка генерування команди minecraft-launcher-lib: {e}", exc_info=True)
+            progress("Помилка формування команди запуску")
+            return False
 
         stdout = stderr = subprocess.DEVNULL if not config.console else None
 
-        process = subprocess.Popen(
-            command,
-            cwd=str(install_dir),
-            stdout=stdout,
-            stderr=stderr,
-        )
+        kwargs = {
+            "cwd":    str(install_dir),
+            "stdout": stdout,
+            "stderr": stderr,
+        }
 
-        log.info(
-            f"Launched — PID: {process.pid} | {config.loader} | "
-            f"{config.ram} | {config.window_size}"
-        )
+        if self.is_windows and not config.console:
+            kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
+
+        process = subprocess.Popen(command, **kwargs)
+
+        log.info(f"Launched — PID: {process.pid}")
         progress("Гру запущено!")
         return True
 

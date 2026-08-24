@@ -196,7 +196,7 @@ def publish_packs():
                             capture_output=True).returncode == 0
     if not exists:
         subprocess.run([gh, "release", "create", PACKS_TAG, "--title", "Модпаки",
-                        "--notes", "Файли модпаків для лаунчера. Не є релізом лаунчера.",
+                        "--notes", "Файли модпаків для лаунчера.",
                         "--latest=false"], cwd=ROOT, check=True)
 
     subprocess.run([gh, "release", "upload", PACKS_TAG, *map(str, files), "--clobber"],

@@ -42,6 +42,14 @@ class InstallError(Exception):
     pass
 
 
+MANIFEST = ".qqq-pack.json"
+UPDATABLE = ("mods/", "config/")
+
+
+def is_updatable(relative: str) -> bool:
+    return relative.replace("\\", "/").startswith(UPDATABLE)
+
+
 def _alternatives(url: str) -> list[str]:
     for origin, mirrors in MIRRORS.items():
         if url.startswith(origin):
@@ -68,9 +76,14 @@ def _valid(path: Path, sha1: str | None, size: int | None) -> bool:
 
 
 def download(url: str, dest: Path, sha1: str | None = None, size: int | None = None,
-             decompress_lzma: bool = False) -> bool:
-    if _valid(dest, sha1, size):
+             decompress_lzma: bool = False, revalidate: bool = False) -> bool:
+    if _valid(dest, sha1, size) and not revalidate:
         return False
+
+    tag = dest.with_name(dest.name + ".etag")
+    headers = {}
+    if revalidate and dest.is_file() and tag.is_file():
+        headers["If-None-Match"] = tag.read_text("utf-8")
 
     dest.parent.mkdir(parents=True, exist_ok=True)
     part = dest.with_name(dest.name + ".part")
@@ -80,8 +93,13 @@ def download(url: str, dest: Path, sha1: str | None = None, size: int | None = N
     for attempt in range(ATTEMPTS):
         for candidate in urls:
             try:
-                with session.get(candidate, stream=True, timeout=TIMEOUT) as response:
+                with session.get(candidate, stream=True, timeout=TIMEOUT,
+                                 headers=headers) as response:
+                    if response.status_code == 304:
+                        return False
                     response.raise_for_status()
+                    if response.headers.get("ETag"):
+                        tag.write_text(response.headers["ETag"], "utf-8")
                     with open(part, "wb") as handle:
                         for chunk in response.iter_content(1 << 16):
                             handle.write(chunk)
@@ -363,8 +381,17 @@ def _install_loader(dependencies: dict, game_dir: Path, progress) -> str:
     return minecraft
 
 
+def prune(game_dir: Path, provided: set[str]):
+    for folder in UPDATABLE:
+        root = game_dir / folder.rstrip("/")
+        for item in root.rglob("*") if root.is_dir() else []:
+            relative = item.relative_to(game_dir).as_posix()
+            if item.is_file() and relative not in provided:
+                item.unlink(missing_ok=True)
+                log.info("Прибрано зайве: %s", relative)
+
 def read_manifest(pack_id: str) -> dict:
-    path = INSTANCES_DIR / pack_id / ".qqq-manifest.json"
+    path = INSTANCES_DIR / pack_id / MANIFEST
     try:
         return json.loads(path.read_text("utf-8"))
     except Exception:
@@ -375,15 +402,8 @@ def set_linked(pack_id: str, linked: bool):
     manifest = read_manifest(pack_id)
     if not manifest:
         raise InstallError("Модпак ще не встановлено")
-    if linked:
-        known = set(manifest.get("files", []))
-        mods = INSTANCES_DIR / pack_id / "mods"
-        for jar in mods.glob("*.jar") if mods.is_dir() else []:
-            if f"mods/{jar.name}" not in known:
-                jar.unlink(missing_ok=True)
-                log.info("Видалено сторонній мод: %s", jar.name)
     manifest["linked"] = linked
-    (INSTANCES_DIR / pack_id / ".qqq-manifest.json").write_text(
+    (INSTANCES_DIR / pack_id / MANIFEST).write_text(
         json.dumps(manifest, ensure_ascii=False), "utf-8")
 
 
@@ -407,16 +427,14 @@ def install_pack(pack: dict, progress, force: bool = False) -> tuple[str, Path, 
     game_dir.mkdir(parents=True, exist_ok=True)
     manifest = read_manifest(pack["id"])
 
-    if manifest and not force:
-        linked = manifest.get("linked", True)
-        if not linked or manifest.get("version") == pack["version"]:
-            progress("Модпак актуальний" if linked else "Модпак відвʼязано", 100)
-            java = ensure_java(_version_json(manifest["minecraft"], game_dir), game_dir, progress)
-            return manifest["version_id"], game_dir, java
+    if manifest and not manifest.get("linked", True) and not force:
+        progress("Модпак відвʼязано — файли не перевіряються", 100)
+        java = ensure_java(_version_json(manifest["minecraft"], game_dir), game_dir, progress)
+        return manifest["version_id"], game_dir, java
 
     progress(f"Завантаження {pack['name']}", 0)
     archive = CACHE_DIR / f"{pack['id']}-{pack['version']}.mrpack"
-    download(pack["url"], archive, pack.get("sha1"))
+    download(pack["url"], archive, pack.get("sha1"), revalidate=not pack.get("sha1"))
 
     with zipfile.ZipFile(archive) as bundle:
         index = json.loads(bundle.read("modrinth.index.json"))
@@ -424,16 +442,18 @@ def install_pack(pack: dict, progress, force: bool = False) -> tuple[str, Path, 
         java = ensure_java(_version_json(index["dependencies"]["minecraft"], game_dir),
                            game_dir, progress)
 
-        jobs, installed = [], []
+        jobs, provided = [], set()
         for entry in index["files"]:
             if entry.get("env", {}).get("client", "required") == "unsupported":
                 continue
             target = (game_dir / entry["path"]).resolve()
             if not str(target).startswith(str(game_dir.resolve())):
                 raise InstallError(f"Небезпечний шлях у паку: {entry['path']}")
+            if not is_updatable(entry["path"]) and target.exists():
+                continue
             jobs.append({"url": entry["downloads"][0], "dest": target,
                          "sha1": entry["hashes"].get("sha1"), "size": entry.get("fileSize")})
-            installed.append(entry["path"])
+            provided.add(entry["path"])
         download_all(jobs, progress, "Моди")
 
         progress("Розпакування конфігів", None)
@@ -443,29 +463,14 @@ def install_pack(pack: dict, progress, force: bool = False) -> tuple[str, Path, 
                     continue
                 relative = name[len(prefix):]
                 target = game_dir / relative
+                if not is_updatable(relative) and target.exists():
+                    continue
                 target.parent.mkdir(parents=True, exist_ok=True)
                 target.write_bytes(bundle.read(name))
-                installed.append(relative)
+                provided.add(relative)
 
-    _cleanup(game_dir, installed, pack["version"], version_id, index["dependencies"]["minecraft"])
+    prune(game_dir, provided)
+    (game_dir / MANIFEST).write_text(json.dumps({
+        "version": pack["version"], "version_id": version_id,
+        "minecraft": index["dependencies"]["minecraft"], "linked": True}, ensure_ascii=False), "utf-8")
     return version_id, game_dir, java
-
-
-def _cleanup(game_dir: Path, installed: list[str], version: str, version_id: str, minecraft: str):
-    manifest = game_dir / ".qqq-manifest.json"
-    previous = []
-    if manifest.is_file():
-        try:
-            previous = json.loads(manifest.read_text("utf-8")).get("files", [])
-        except Exception:
-            previous = []
-
-    for relative in set(previous) - set(installed):
-        target = game_dir / relative
-        if target.is_file():
-            target.unlink(missing_ok=True)
-            log.info("Видалено застарілий файл: %s", relative)
-
-    manifest.write_text(json.dumps({"version": version, "version_id": version_id,
-                                    "minecraft": minecraft, "linked": True,
-                                    "files": sorted(set(installed))}, ensure_ascii=False), "utf-8")

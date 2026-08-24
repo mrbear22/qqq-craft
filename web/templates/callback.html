@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html lang="uk">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{ title }}</title>
+    <link rel="stylesheet" href="/static/styles.css">
+    <link rel="icon" href="/static/logo.ico">
+</head>
+<body class="auth">
+    <div class="auth-card">
+        <img src="/static/logo.png" alt="QQQ" class="auth-logo">
+
+        <div class="auth-mark {{ 'ok' if success else 'fail' }}">
+            {% if success %}
+                <svg viewBox="0 0 24 24" width="26" height="26" aria-hidden="true">
+                    <path d="M4 12.5 9.5 18 20 7" fill="none" stroke="currentColor"
+                          stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+                </svg>
+            {% else %}
+                <svg viewBox="0 0 24 24" width="26" height="26" aria-hidden="true">
+                    <path d="M6 6l12 12M18 6L6 18" fill="none" stroke="currentColor"
+                          stroke-width="2.5" stroke-linecap="round"/>
+                </svg>
+            {% endif %}
+        </div>
+
+        <h1>{{ title }}</h1>
+        <p>{{ message }}</p>
+
+        {% if not success %}
+            <p class="auth-hint">Спробуй увійти ще раз. Якщо не вийде — напиши адміністрації сервера.</p>
+        {% endif %}
+
+        <button type="button" class="start-btn" onclick="window.close()">Закрити</button>
+
+        {% if success %}
+            <p class="auth-hint">Вікно закриється саме через <b id="left">5</b> с</p>
+        {% endif %}
+    </div>
+
+    {% if success %}
+        <script>
+            let left = 5;
+            const label = document.getElementById('left');
+            setInterval(() => {
+                left -= 1;
+                label.textContent = left;
+                if (left <= 0) window.close();
+            }, 1000);
+        </script>
+    {% endif %}
+</body>
+</html>

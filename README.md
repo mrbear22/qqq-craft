@@ -1,2 +1,3 @@
 # qqq-craft
-Лаунчер для проекту QQQ-CRAFT
+
+Лаунчер проєкту QQQ-CRAFT.

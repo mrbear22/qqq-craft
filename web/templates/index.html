@@ -1,0 +1,325 @@
+<!DOCTYPE html>
+<html lang="uk">
+<head>
+    <meta charset="UTF-8">
+    <title>QQQ - Час стати легендою!</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
+    <link rel="icon" href="{{ url_for('static', filename='logo.ico') }}">
+</head>
+<body>
+    <div class="titlebar pywebview-drag-region">
+        <span class="titlebar-name">QQQ-CRAFT <small>{{ version }}</small></span>
+        <div class="titlebar-buttons">
+            <button type="button" class="win-btn" onclick="fetch('/window/minimize')">&#8211;</button>
+            <button type="button" class="win-btn close" onclick="fetch('/window/close')">&#10005;</button>
+        </div>
+    </div>
+
+    <div class="container">
+        <div class="content-section">
+            <div class="tab-content">
+                <div class="tab-pane active">
+                    <div class="news-list" id="news-list"></div>
+                    <p class="no-content" id="news-loading"><i class="spinner light"></i>Завантаження новин</p>
+                    <p class="no-content" id="news-empty" hidden></p>
+                </div>
+            </div>
+        </div>
+
+        <aside class="launcher">
+            <div class="side-scroll">
+                <img src="/static/logo.png" alt="QQQ" class="logo">
+
+                {% if account %}
+                    <div class="profile">
+                        <img class="head" src="{{ head }}" alt="" onerror="this.style.visibility='hidden'">
+                        <span class="greeting">Привіт, <b>{{ account }}</b>!</span>
+                        <button type="button" class="ghost" onclick="logout()">Вийти</button>
+                    </div>
+                {% else %}
+                    <button type="button" class="microsoft-btn" onclick="login()">Увійти через Microsoft</button>
+                {% endif %}
+
+                <div class="packs" id="packs">
+                    <p class="loading"><i class="spinner"></i>Завантаження модпаків</p>
+                </div>
+            </div>
+
+            <footer class="launch-bar">
+                <div class="logs" id="logs" hidden>
+                    <span id="log-text"></span>
+                    <span class="progress"><i id="progress-fill"></i></span>
+                </div>
+                <div class="launch-row">
+                    <button type="button" id="start" class="start-btn">До гри</button>
+                    <button type="button" class="settings-btn" onclick="openSettings()" title="Налаштування">
+                        <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true">
+                            <path fill="currentColor" d="M12 8a4 4 0 100 8 4 4 0 000-8zm0 6a2 2 0 110-4 2 2 0 010 4z"/>
+                            <path fill="currentColor" d="M19.4 13a7.7 7.7 0 000-2l2-1.5-2-3.4-2.4 1a7.6 7.6 0 00-1.7-1L14.9 3H10l-.4 2.6c-.6.3-1.2.6-1.7 1l-2.4-1-2 3.4L3.5 11a7.7 7.7 0 000 2l-2 1.5 2 3.4 2.4-1c.5.4 1.1.8 1.7 1l.4 2.6h4.9l.4-2.6c.6-.2 1.2-.6 1.7-1l2.4 1 2-3.4-2-1.5z" opacity=".35"/>
+                        </svg>
+                    </button>
+                </div>
+            </footer>
+        </aside>
+    </div>
+
+    <div class="modal" id="settings-modal" hidden>
+        <div class="modal-card">
+            <header class="modal-head">
+                <span>Налаштування</span>
+                <button type="button" class="win-btn close" onclick="closeSettings()">&#10005;</button>
+            </header>
+
+            <div class="modal-body">
+                <label class="field">
+                    <span>Памʼять: <b id="ram-label"></b></span>
+                    <input type="range" id="ram" min="2" max="{{ ram_max }}" step="1" value="{{ settings.ram[:-1] }}">
+                    <small>У системі {{ ram_max + 2 }} ГБ, грі можна віддати до {{ ram_max }} ГБ</small>
+                </label>
+
+                <label class="field">
+                    <span>Розмір вікна</span>
+                    <select id="window">
+                        {% for value in window_choices %}
+                            <option value="{{ value }}" {% if value == settings.window %}selected{% endif %}>{{ value }}</option>
+                        {% endfor %}
+                    </select>
+                </label>
+
+                <label class="check">
+                    <input type="checkbox" name="multiplayer" {% if settings.multiplayer %}checked{% endif %}> Одразу на сервер
+                </label>
+                <label class="check">
+                    <input type="checkbox" name="fullscreen" {% if settings.fullscreen %}checked{% endif %}> Повноекранний режим
+                </label>
+                <label class="check">
+                    <input type="checkbox" name="console" {% if settings.console %}checked{% endif %}> Показувати консоль
+                </label>
+
+                <div class="modal-section">
+                    <span class="section-title">Модпак <b id="pack-name"></b></span>
+                    <div class="pack-actions">
+                        <button type="button" class="ghost" onclick="openFolder()">Відкрити папку</button>
+                        <button type="button" class="ghost" onclick="packAction('reinstall', 'Перевстановити модпак? Усі зміни в його папці буде втрачено.')">Перевстановити</button>
+                        <button type="button" class="ghost" id="link-btn" onclick="toggleLink()">Відвʼязати</button>
+                    </div>
+                    <small id="link-hint" class="hint"></small>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let packs = [];
+        const startBtn = document.getElementById('start');
+        const logs = document.getElementById('logs');
+        const logText = document.getElementById('log-text');
+        const progressFill = document.getElementById('progress-fill');
+        const ram = document.getElementById('ram');
+        const ramLabel = document.getElementById('ram-label');
+        const linkBtn = document.getElementById('link-btn');
+        const modal = document.getElementById('settings-modal');
+        let busy = false;
+
+        function selectedPack() {
+            const checked = document.querySelector('input[name="pack"]:checked');
+            return checked ? packs.find(pack => pack.id === checked.value) : null;
+        }
+
+        function refresh() {
+            document.querySelectorAll('.pack-card').forEach(card =>
+                card.classList.toggle('selected', card.querySelector('input').checked));
+            const pack = selectedPack();
+            if (!pack) return startBtn.disabled = true;
+            document.getElementById('pack-name').textContent = pack.name;
+            linkBtn.textContent = pack.status.linked ? 'Відвʼязати' : 'Привʼязати';
+            linkBtn.disabled = !pack.status.installed;
+            document.getElementById('link-hint').textContent = !pack.status.installed
+                ? 'Модпак ще не встановлено'
+                : pack.status.linked
+                    ? 'Лаунчер стежить за файлами: оновлює модпак і прибирає зайве.'
+                    : 'Файли не чіпаються — можна додавати власні моди, але оновлення не приходять.';
+            startBtn.disabled = false;
+            startBtn.textContent = !pack.status.installed ? 'Встановити'
+                : pack.status.outdated ? 'Оновити' : 'До гри';
+        }
+
+        function showLog(message, percent) {
+            logs.hidden = !message;
+            logText.textContent = message || '';
+            progressFill.style.width = (percent == null ? 0 : percent) + '%';
+        }
+
+        function setBusy(state) {
+            busy = state;
+            startBtn.disabled = state;
+            if (state) startBtn.textContent = 'Зачекайте';
+            else refresh();
+        }
+
+        function payload() {
+            const form = {
+                pack: (selectedPack() || {}).id || '',
+                ram: ram.value + 'G',
+                window: document.getElementById('window').value
+            };
+            for (const key of ['multiplayer', 'fullscreen', 'console']) {
+                form[key] = document.querySelector(`input[name="${key}"]`).checked;
+            }
+            return form;
+        }
+
+        function post(url, body) {
+            return fetch(url, {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify(body || {})
+            }).then(response => response.json());
+        }
+
+        function login() {
+            post('/login').then(data => { if (!data.success) showLog('Помилка: ' + data.error); });
+        }
+
+        function logout() {
+            if (confirm('Вийти з акаунту Microsoft?')) post('/logout').then(() => location.reload());
+        }
+
+        function openFolder() {
+            post('/folder', {pack: (selectedPack() || {}).id || ''});
+        }
+
+        function packAction(action, question) {
+            const pack = selectedPack();
+            if (!pack || (question && !confirm(question))) return;
+            post('/pack/' + action, {pack: pack.id}).then(data => {
+                if (data.success) location.reload();
+                else showLog('Помилка: ' + data.error);
+            });
+        }
+
+        function toggleLink() {
+            const pack = selectedPack();
+            if (!pack) return;
+            if (pack.status.linked) {
+                packAction('unlink', 'Відвʼязати модпак? Лаунчер більше не чіпатиме його файли — можна додавати власні моди, але оновлення не приходитимуть.');
+            } else {
+                packAction('relink', 'Привʼязати назад? Файли модпаку буде відновлено, а сторонні моди — видалено.');
+            }
+        }
+
+        function openSettings() { modal.hidden = false; }
+        function closeSettings() { modal.hidden = true; }
+
+        modal.onclick = event => { if (event.target === modal) closeSettings(); };
+        document.addEventListener('keydown', event => { if (event.key === 'Escape') closeSettings(); });
+
+        function escape(text) {
+            const node = document.createElement('div');
+            node.textContent = text;
+            return node.innerHTML;
+        }
+
+        function badge(status, version) {
+            if (!status.installed) return '<span class="badge new">Не встановлено</span>';
+            if (!status.linked) return '<span class="badge unlinked">Відвʼязано</span>';
+            if (status.outdated) return '<span class="badge update">Оновлення</span>';
+            return '<span class="badge ok">Готово</span>';
+        }
+
+        function renderPacks(data) {
+            packs = data.packs;
+            const box = document.getElementById('packs');
+            if (!packs.length) {
+                box.innerHTML = '<p class="no-content small">Список модпаків недоступний</p>';
+                startBtn.disabled = true;
+                return;
+            }
+            box.classList.add('appear');
+            box.innerHTML = packs.map(pack => `
+                <label class="pack-card">
+                    <input type="radio" name="pack" value="${escape(pack.id)}"
+                           ${pack.id === data.selected ? 'checked' : ''}>
+                    <span class="pack-row">
+                        <span class="pack-title">${escape(pack.name)}</span>
+                        ${pack.server ? `<span class="chip online" data-server="${escape(pack.id)}">…</span>` : ''}
+                    </span>
+                    <span class="pack-meta">
+                        ${badge(pack.status)}
+                        <span class="pack-version">${escape(pack.status.version || pack.version)}</span>
+                    </span>
+                </label>`).join('');
+            box.querySelectorAll('input[name="pack"]').forEach(input => input.onchange = refresh);
+            refresh();
+            loadStatus();
+        }
+
+        function renderNews(items) {
+            const list = document.getElementById('news-list');
+            const empty = document.getElementById('news-empty');
+            document.getElementById('news-loading').hidden = true;
+            if (!items.length) {
+                list.innerHTML = '';
+                empty.hidden = false;
+                empty.textContent = 'Новини недоступні';
+                return;
+            }
+            list.classList.add('appear');
+            list.innerHTML = items.map(item => `
+                <article class="news-item">
+                    ${item.image ? `<img src="${escape(item.image)}" alt="" class="news-image">` : ''}
+                    <div class="news-content">
+                        <h2>${escape(item.title)}</h2>
+                        <time>${escape(item.timestamp)}</time>
+                        <p>${item.description}</p>
+                        ${item.reactions.length ? `<div class="reactions">${item.reactions.map(reaction =>
+                            `<span class="reaction">${escape(reaction.emoji)} ${reaction.count}</span>`).join('')}</div>` : ''}
+                    </div>
+                </article>`).join('');
+        }
+
+        function loadStatus() {
+            fetch('/status').then(response => response.json()).then(data => {
+                document.querySelectorAll('[data-server]').forEach(node => {
+                    const status = data[node.dataset.server];
+                    node.textContent = status ? `${status.online} онлайн` : 'офлайн';
+                    node.classList.toggle('offline', !status);
+                });
+            }).catch(() => document.querySelectorAll('[data-server]').forEach(node => node.remove()));
+        }
+
+        ram.oninput = () => ramLabel.textContent = ram.value + ' ГБ';
+
+        startBtn.onclick = () => {
+            if (busy) return;
+            setBusy(true);
+            post('/start', payload()).then(data => {
+                if (!data.success) { setBusy(false); showLog(data.error); }
+            }).catch(error => { setBusy(false); showLog('Помилка: ' + error.message); });
+        };
+
+        const events = new EventSource('/events');
+        events.onmessage = event => {
+            const data = JSON.parse(event.data);
+            if (data.message === 'auth_success') return location.reload();
+            showLog(data.message, data.percent);
+            if (data.message.startsWith('Помилка')) setBusy(false);
+        };
+
+        document.addEventListener('click', event => {
+            const link = event.target.closest('[data-external]');
+            if (!link) return;
+            event.preventDefault();
+            fetch('/external?url=' + encodeURIComponent(link.dataset.external));
+        });
+
+        document.addEventListener('contextmenu', event => event.preventDefault());
+        ram.oninput();
+        startBtn.disabled = true;
+        fetch('/api/packs').then(response => response.json()).then(renderPacks)
+            .catch(() => renderPacks({packs: [], selected: ''}));
+        fetch('/api/news').then(response => response.json()).then(renderNews)
+            .catch(() => renderNews([]));
+    </script>
+</body>
+</html>

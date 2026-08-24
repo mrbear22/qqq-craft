@@ -2,4 +2,8 @@ __pycache__/
 build/
 dist/
 packs/*.mrpack
+news/
+
 *.pfx
+*.p12
+*.key

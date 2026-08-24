@@ -14,7 +14,7 @@ VERSION = "1.0.29.0"
 GITHUB_REPO = "mrbear22/qqq-craft"
 LATEST_RELEASE = f"https://github.com/{GITHUB_REPO}/releases/latest"
 PACKS_INDEX = f"https://github.com/{GITHUB_REPO}/releases/download/packs/packs.json"
-NEWS_INDEX = f"https://github.com/{GITHUB_REPO}/releases/download/packs/news.json"
+NEWS_INDEX = f"https://github.com/{GITHUB_REPO}/releases/download/news/news.json"
 
 CLIENT_ID = "8015479d-3def-49ae-8f10-2fea4199639f"
 FLASK_PORT = 6724

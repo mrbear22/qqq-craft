@@ -174,6 +174,25 @@ def publish(version: str, installer: Path | None):
 PACKS_TAG = "packs"
 
 
+def publish_news():
+    """Той самий скрипт, що й у CI — просто запущений вручну."""
+    if not find_gh():
+        sys.exit("Потрібен GitHub CLI: winget install GitHub.cli && gh auth login")
+
+    missing = [name for name in ("DISCORD_TOKEN", "DISCORD_CHANNEL")
+               if not os.environ.get(name)]
+    if missing:
+        sys.exit(f"Не задано {' і '.join(missing)}:\n"
+                 '  setx DISCORD_TOKEN "..."\n  setx DISCORD_CHANNEL "..."')
+
+    slug = repo_slug()
+    if not slug:
+        sys.exit("Не вдалося визначити репозиторій з origin")
+
+    subprocess.run([sys.executable, str(ROOT / ".github" / "news.py")], cwd=ROOT,
+                   env={**os.environ, "GITHUB_REPOSITORY": slug}, check=True)
+
+
 def publish_packs():
     """Заливає модпаки у рухомий реліз packs — окремо від релізів лаунчера."""
     gh = find_gh()
@@ -236,10 +255,16 @@ def main():
     parser.add_argument("--version", help="задати версію вручну, наприклад 1.0.29.0")
     parser.add_argument("--packs", action="store_true",
                         help="залити модпаки з теки packs/ і вийти")
+    parser.add_argument("--news", action="store_true",
+                        help="оновити новини з Discord і вийти")
     options = parser.parse_args()
 
     if options.packs:
         publish_packs()
+        return
+
+    if options.news:
+        publish_news()
         return
 
     if options.release:

@@ -49,7 +49,7 @@ a {
     flex: 1;
     display: flex;
     flex-direction: column;
-    background: #9e644c url('/static/background2.png') center/cover;
+    background: #9e644c url('/static/background3.png') center/cover;
 	padding-right: 3px;
 }
 
@@ -981,3 +981,7 @@ input[type="range"]::-webkit-slider-thumb { transition: background-color .12s ea
 .auth-card .start-btn { width: 100%; height: 46px; margin-top: 4px; }
 .auth-hint { color: #8a6a4f !important; font-size: 12px !important; }
 .auth-hint b { color: #8b4513; }
+
+.pack-card .ghost { width: 100%; margin-top: 4px; }
+
+.badges { display: flex; gap: 5px; flex-wrap: wrap; }

@@ -47,6 +47,7 @@ UPDATABLE = ("mods/", "config/")
 
 
 def is_updatable(relative: str) -> bool:
+    """mods/ і config/ пак перезаписує; решту — лише якщо файлу ще немає."""
     return relative.replace("\\", "/").startswith(UPDATABLE)
 
 
@@ -77,6 +78,7 @@ def _valid(path: Path, sha1: str | None, size: int | None) -> bool:
 
 def download(url: str, dest: Path, sha1: str | None = None, size: int | None = None,
              decompress_lzma: bool = False, revalidate: bool = False) -> bool:
+    """revalidate — спитати сервер, чи файл змінився, замість сліпої довіри кешу."""
     if _valid(dest, sha1, size) and not revalidate:
         return False
 
@@ -381,7 +383,22 @@ def _install_loader(dependencies: dict, game_dir: Path, progress) -> str:
     return minecraft
 
 
+def prune_versions(game_dir: Path, version_id: str):
+    """Після переїзду на нову версію гри старі теки versions/ вже нікому не потрібні."""
+    keep, current = set(), version_id
+    while current and current not in keep:
+        keep.add(current)
+        current = _version_json(current, game_dir).get("inheritsFrom", "")
+
+    root = game_dir / "versions"
+    for folder in root.iterdir() if root.is_dir() else []:
+        if folder.is_dir() and folder.name not in keep:
+            shutil.rmtree(folder, ignore_errors=True)
+            log.info("Прибрано стару версію: %s", folder.name)
+
+
 def prune(game_dir: Path, provided: set[str]):
+    """У mods/ і config/ лишається тільки те, що є в паку."""
     for folder in UPDATABLE:
         root = game_dir / folder.rstrip("/")
         for item in root.rglob("*") if root.is_dir() else []:
@@ -417,8 +434,7 @@ def pack_status(pack: dict) -> dict:
         "installed": bool(manifest),
         "linked": manifest.get("linked", True),
         "version": manifest.get("version"),
-        "outdated": bool(manifest) and manifest.get("linked", True)
-        and manifest.get("version") != pack["version"],
+        "outdated": bool(manifest) and manifest.get("version") != pack["version"],
     }
 
 
@@ -470,6 +486,7 @@ def install_pack(pack: dict, progress, force: bool = False) -> tuple[str, Path, 
                 provided.add(relative)
 
     prune(game_dir, provided)
+    prune_versions(game_dir, version_id)
     (game_dir / MANIFEST).write_text(json.dumps({
         "version": pack["version"], "version_id": version_id,
         "minecraft": index["dependencies"]["minecraft"], "linked": True}, ensure_ascii=False), "utf-8")

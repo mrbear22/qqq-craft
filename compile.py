@@ -139,6 +139,10 @@ def find_tool(name: str, *candidates: str) -> str | None:
     return next((path for path in candidates if Path(path).is_file()), None)
 
 
+def find_gh() -> str | None:
+    return find_tool("gh", r"C:\Program Files\GitHub CLI\gh.exe")
+
+
 def make_installer() -> Path | None:
     iscc = find_tool("iscc", r"C:\Program Files (x86)\Inno Setup 6\ISCC.exe",
                      r"C:\Program Files\Inno Setup 6\ISCC.exe")
@@ -152,10 +156,7 @@ def make_installer() -> Path | None:
 
 
 def publish(version: str, installer: Path | None):
-    gh = find_tool("gh", r"C:\Program Files\GitHub CLI\gh.exe")
-    if not gh:
-        sys.exit("Потрібен GitHub CLI: gh auth login")
-
+    gh = find_gh()
     git("commit", "config.py", "-m", f"Release {version}")
     git("push")
 
@@ -174,9 +175,10 @@ PACKS_TAG = "packs"
 
 
 def publish_packs():
-    gh = find_tool("gh", r"C:\Program Files\GitHub CLI\gh.exe")
+    """Заливає модпаки у рухомий реліз packs — окремо від релізів лаунчера."""
+    gh = find_gh()
     if not gh:
-        sys.exit("Потрібен GitHub CLI: gh auth login")
+        sys.exit("Потрібен GitHub CLI: winget install GitHub.cli && gh auth login")
 
     folder = ROOT / "packs"
     index = folder / "packs.json"
@@ -196,7 +198,7 @@ def publish_packs():
                             capture_output=True).returncode == 0
     if not exists:
         subprocess.run([gh, "release", "create", PACKS_TAG, "--title", "Модпаки",
-                        "--notes", "Файли модпаків для лаунчера.",
+                        "--notes", "Файли модпаків для лаунчера. Не є релізом лаунчера.",
                         "--latest=false"], cwd=ROOT, check=True)
 
     subprocess.run([gh, "release", "upload", PACKS_TAG, *map(str, files), "--clobber"],
@@ -240,8 +242,11 @@ def main():
         publish_packs()
         return
 
-    if options.release and not GIT:
-        sys.exit("Для --release потрібен git у PATH")
+    if options.release:
+        if not GIT:
+            sys.exit("Для --release потрібен git у PATH")
+        if not find_gh():
+            sys.exit("Для --release потрібен GitHub CLI: winget install GitHub.cli && gh auth login")
 
     version = options.version or next_version(bump=options.release)
     if not GIT and not options.version:

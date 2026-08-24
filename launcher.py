@@ -4,7 +4,6 @@ import json
 import logging
 import os
 import queue
-import re
 import shutil
 import socket
 import subprocess
@@ -16,14 +15,13 @@ import urllib.parse
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-import markdown
 import requests
 from flask import Flask, Response, jsonify, render_template, request
 
 import game
 import install
 from config import (APP_DIR, BASE_DIR, CACHE_DIR, FLASK_PORT, INSTANCES_DIR, IS_WINDOWS, LOGS_DIR,
-                    NEWS_URL, Settings, USER_AGENT, VERSION, check_update, max_ram_gb,
+                    NEWS_INDEX, Settings, USER_AGENT, VERSION, check_update, max_ram_gb,
                     open_path, screen_modes)
 
 STATUS_TTL = 30
@@ -322,34 +320,19 @@ def close_route():
 
 
 def load_news() -> list:
+    cache = CACHE_DIR / "news.json"
     try:
-        response = requests.get(NEWS_URL, timeout=10,
-                                headers={"Accept": "application/json", "User-Agent": USER_AGENT})
+        response = requests.get(NEWS_INDEX, timeout=10, headers={"User-Agent": USER_AGENT})
         response.raise_for_status()
-        messages = response.json()
+        news = response.json()
+        cache.write_text(json.dumps(news, ensure_ascii=False), "utf-8")
+        return news
     except Exception as error:
         log.error("Не вдалося завантажити новини: %s", error)
+    try:
+        return json.loads(cache.read_text("utf-8"))
+    except Exception:
         return []
-
-    news = []
-    for message in messages:
-        embed = (message.get("embeds") or [{}])[0]
-        if not embed.get("title") and not embed.get("image", {}).get("url"):
-            continue
-        description = ""
-        if embed.get("description"):
-            description = re.sub(r'<a\s+href=["\']([^"\']+)["\']',
-                                 lambda m: f'<a data-external="{m.group(1)}" href="#"',
-                                 markdown.markdown(embed["description"]), flags=re.I)
-        news.append({
-            "title": embed.get("title", ""),
-            "description": description,
-            "image": embed.get("image", {}).get("url", ""),
-            "timestamp": (message.get("timestamp") or "").split(".")[0].replace("T", " "),
-            "reactions": [{"emoji": (r.get("emoji") or {}).get("name", ""), "count": r.get("count", 0)}
-                          for r in message.get("reactions", [])],
-        })
-    return news
 
 
 LEGACY_SIGNS = ("qqq-craft.exe", "launcher.exe", "unins000.exe", "saves", "mods", "versions")
@@ -369,6 +352,7 @@ def legacy_dirs() -> list[Path]:
 
 
 def notify_legacy():
+    """Один раз повідомляє про стару теку. Нічого не переносить і не видаляє."""
     marker = BASE_DIR / ".legacy-checked"
     if marker.is_file():
         return

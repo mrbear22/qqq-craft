@@ -43,6 +43,7 @@
                 <div class="packs" id="packs">
                     <p class="loading"><i class="spinner"></i>Завантаження модпаків</p>
                 </div>
+
             </div>
 
             <footer class="launch-bar">
@@ -138,10 +139,13 @@
                 ? 'Модпак ще не встановлено'
                 : pack.status.linked
                     ? 'Лаунчер стежить за файлами: оновлює модпак і прибирає зайве.'
-                    : 'Файли не чіпаються — можна додавати власні моди, але оновлення не приходять.';
+                    : pack.status.outdated
+                        ? `Вийшла версія ${pack.version}. Привʼяжи модпак, щоб оновитись — ` +
+                          'сторонні моди при цьому буде видалено.'
+                        : 'Файли не чіпаються — можна додавати власні моди, але оновлення не приходять.';
             startBtn.disabled = false;
             startBtn.textContent = !pack.status.installed ? 'Встановити'
-                : pack.status.outdated ? 'Оновити' : 'До гри';
+                : pack.status.outdated && pack.status.linked ? 'Оновити' : 'До гри';
         }
 
         function showLog(message, percent) {
@@ -189,13 +193,20 @@
             post('/folder', {pack: (selectedPack() || {}).id || ''});
         }
 
-        function packAction(action, question) {
-            const pack = selectedPack();
+        function packAction(action, question, id) {
+            const pack = id ? packs.find(item => item.id === id) : selectedPack();
             if (!pack || (question && !confirm(question))) return;
             post('/pack/' + action, {pack: pack.id}).then(data => {
                 if (data.success) location.reload();
                 else showLog('Помилка: ' + data.error);
             });
+        }
+
+        function relink(event, id) {
+            event.preventDefault();
+            event.stopPropagation();
+            packAction('relink', 'Привʼязати назад? Файли модпаку буде відновлено, '
+                + 'а сторонні моди — видалено.', id);
         }
 
         function toggleLink() {
@@ -220,11 +231,18 @@
             return node.innerHTML;
         }
 
-        function badge(status, version) {
+        function badge(status) {
             if (!status.installed) return '<span class="badge new">Не встановлено</span>';
             if (!status.linked) return '<span class="badge unlinked">Відвʼязано</span>';
             if (status.outdated) return '<span class="badge update">Оновлення</span>';
             return '<span class="badge ok">Готово</span>';
+        }
+
+        function versionText(pack) {
+            const status = pack.status;
+            return status.installed && status.outdated
+                ? `${status.version} → ${pack.version}`
+                : (status.version || pack.version);
         }
 
         function renderPacks(data) {
@@ -245,9 +263,12 @@
                         ${pack.server ? `<span class="chip online" data-server="${escape(pack.id)}">…</span>` : ''}
                     </span>
                     <span class="pack-meta">
-                        ${badge(pack.status)}
-                        <span class="pack-version">${escape(pack.status.version || pack.version)}</span>
+                        <span class="badges">${badge(pack.status)}</span>
+                        <span class="pack-version">${escape(versionText(pack))}</span>
                     </span>
+                    ${pack.status.installed && !pack.status.linked && pack.status.outdated ? `
+                        <button type="button" class="ghost"
+                                onclick="relink(event, '${escape(pack.id)}')">Привʼязати й оновити</button>` : ''}
                 </label>`).join('');
             box.querySelectorAll('input[name="pack"]').forEach(input => input.onchange = refresh);
             refresh();

@@ -288,7 +288,9 @@
             list.classList.add('appear');
             list.innerHTML = items.map(item => `
                 <article class="news-item">
-                    ${item.image ? `<img src="${escape(item.image)}" alt="" class="news-image">` : ''}
+                    ${item.video
+                        ? `<video src="${escape(item.video)}" class="news-video" autoplay loop muted playsinline preload="auto"></video>`
+                        : item.image ? `<img src="${escape(item.image)}" alt="" class="news-image">` : ''}
                     <div class="news-content">
                         <h2>${escape(item.title)}</h2>
                         <time>${escape(item.timestamp)}</time>

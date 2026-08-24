@@ -17,6 +17,7 @@ API = "https://discord.com/api/v10"
 MENTIONS = re.compile(r"@everyone|@here|<@[!&]?\d+>|<#\d+>")
 BULLET = re.compile(r"^\s*(?:[-*+]|\d+\.)\s")
 IMAGES = (".png", ".jpg", ".jpeg", ".gif", ".webp")
+VIDEOS = (".mp4", ".webm", ".mov", ".mkv")
 MAX_WIDTH = 1000
 QUALITY = 80
 TOKEN = os.environ["DISCORD_TOKEN"]
@@ -39,7 +40,6 @@ def fetch_messages() -> list[dict]:
 
 
 def pick_image(embed: dict, attachments: list[dict]) -> str:
-    """Відео та інші вкладення пропускаємо — у новинах показується лише картинка."""
     for candidate in (embed.get("image", {}).get("url"), embed.get("thumbnail", {}).get("url")):
         if candidate:
             return candidate
@@ -47,6 +47,18 @@ def pick_image(embed: dict, attachments: list[dict]) -> str:
         content_type = attachment.get("content_type", "")
         name = attachment.get("filename", "").lower()
         if content_type.startswith("image/") or name.endswith(IMAGES):
+            return attachment.get("url", "")
+    return ""
+
+
+def pick_video(embed: dict, attachments: list[dict]) -> str:
+    candidate = embed.get("video", {}).get("url")
+    if candidate:
+        return candidate
+    for attachment in attachments:
+        content_type = attachment.get("content_type", "")
+        name = attachment.get("filename", "").lower()
+        if content_type.startswith("video/") or name.endswith(VIDEOS):
             return attachment.get("url", "")
     return ""
 
@@ -71,6 +83,28 @@ def mirror_image(url: str) -> str:
     name = compress(image.content, digest) or f"news-{digest}{suffix}"
     if not (OUT / name).exists():
         (OUT / name).write_bytes(image.content)
+    return f"https://github.com/{REPO}/releases/download/{TAG}/{name}"
+
+
+def mirror_video(url: str) -> str:
+    """Те саме, що і mirror_image, але без перекодування — Pillow відео не бере."""
+    if not url:
+        return ""
+    try:
+        video = session.get(url, timeout=60)
+        video.raise_for_status()
+    except Exception as error:
+        print(f"Відео недоступне: {error}", file=sys.stderr)
+        return ""
+
+    digest = hashlib.sha1(video.content).hexdigest()[:12]
+    suffix = Path(url.split("?")[0]).suffix.lower()
+    if suffix not in VIDEOS:
+        suffix = ".mp4"
+    name = f"news-{digest}{suffix}"
+    if not (OUT / name).exists():
+        (OUT / name).write_bytes(video.content)
+        print(f"  {name}: {len(video.content) // 1024} КБ")
     return f"https://github.com/{REPO}/releases/download/{TAG}/{name}"
 
 
@@ -111,17 +145,20 @@ def to_html(text: str) -> str:
 
 def build(message: dict) -> dict | None:
     embed = (message.get("embeds") or [{}])[0]
+    attachments = message.get("attachments") or []
     lines = [line for line in clean(message.get("content", "")).split("\n") if line.strip()]
     title = embed.get("title") or (lines[0][:120] if lines else "")
     body = clean(embed.get("description", "")) or "\n".join(lines[1:])
-    image = pick_image(embed, message.get("attachments") or [])
+    image = pick_image(embed, attachments)
+    video = pick_video(embed, attachments)
 
-    if not title and not image:
+    if not title and not image and not video:
         return None
     return {
         "title": title,
         "description": to_html(body),
         "image": mirror_image(image),
+        "video": mirror_video(video),
         "timestamp": (message.get("timestamp") or "").split(".")[0].replace("T", " "),
         "reactions": [{"emoji": (item.get("emoji") or {}).get("name", ""),
                        "count": item.get("count", 0)} for item in message.get("reactions", [])],
@@ -133,6 +170,14 @@ def publish(files: list[Path]):
         subprocess.run(["gh", "release", "create", TAG, "--title", "Новини",
                         "--notes", "Дзеркало новинного каналу Discord для лаунчера.",
                         "--latest=false"], check=True)
+
+    keep = {file.name for file in files}
+    existing = subprocess.run(["gh", "release", "view", TAG, "--json", "assets",
+                               "--jq", ".assets[].name"], capture_output=True, text=True, check=True)
+    stale = [name for name in existing.stdout.split() if name not in keep]
+    for name in stale:
+        subprocess.run(["gh", "release", "delete-asset", TAG, name, "--yes"], check=True)
+
     subprocess.run(["gh", "release", "upload", TAG, *map(str, files), "--clobber"], check=True)
 
 

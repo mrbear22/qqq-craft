@@ -9,7 +9,7 @@ from pathlib import Path
 
 import requests
 
-VERSION = "0.0.1.0"
+VERSION = "1.0.30.0"
 
 GITHUB_REPO = "mrbear22/qqq-craft"
 LATEST_RELEASE = f"https://github.com/{GITHUB_REPO}/releases/latest"

@@ -1,12 +1,11 @@
 #!/usr/bin/env python3
+"""Точка входу: Flask-маршрути для інтерфейсу, вікно і стан застосунку."""
 import base64
 import json
 import logging
 import os
 import queue
-import shutil
 import socket
-import subprocess
 import sys
 import threading
 import time
@@ -15,107 +14,94 @@ import urllib.parse
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-import requests
 from flask import Flask, Response, jsonify, render_template, request
 
+import config
 import game
 import install
-from config import (APP_DIR, BASE_DIR, CACHE_DIR, FLASK_PORT, INSTANCES_DIR, IS_WINDOWS, LOGS_DIR,
-                    NEWS_INDEX, Settings, USER_AGENT, VERSION, check_update, max_ram_gb,
-                    open_path, screen_modes)
+from config import (APP_DIR, BASE_DIR, FLASK_PORT, INSTANCES_DIR, LEGACY_DIRS, LOGS_DIR, Settings,
+                    VERSION, alert, ask, max_ram_gb, open_path, screen_modes)
 
 STATUS_TTL = 30
 PACKS_TTL = 60
+LEGACY_SIGNS = ("qqq-craft.exe", "launcher.exe", "unins000.exe", "saves", "mods", "versions")
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s %(levelname)s %(name)s: %(message)s",
-    handlers=[logging.StreamHandler(), logging.FileHandler(LOGS_DIR / "launcher.log", encoding="utf-8")],
-)
 log = logging.getLogger("launcher")
-
 RESOURCES = Path(getattr(sys, "_MEIPASS", Path(__file__).parent))
 app = Flask(__name__, static_folder=RESOURCES / "web/static",
             template_folder=RESOURCES / "web/templates")
-account = game.Account()
-subscribers: set[queue.Queue] = set()
-status_cache = {"time": 0.0, "data": {}}
-packs_fetched = 0.0
-dialog_shown = threading.Event()
-window = None
-packs_cache: list[dict] = []
 
 
-def _dialog(text: str, question: bool) -> bool:
-    if IS_WINDOWS:
-        import ctypes
-        style = 0x24 if question else 0x10
-        return ctypes.windll.user32.MessageBoxW(None, text, "QQQ-CRAFT", style) == 6
+class State:
+    """Спільний стан для потоків Flask, фонових задач і вікна."""
 
-    for tool, args in (("zenity", ["--question" if question else "--error", f"--text={text}"]),
-                       ("kdialog", ["--yesno" if question else "--error", text])):
-        if shutil.which(tool):
-            return subprocess.run([tool, *args]).returncode == 0
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.account = game.Account()
+        self.packs: list[install.Pack] = []
+        self.packs_time = float("-inf")
+        self.servers: dict = {}
+        self.servers_time = float("-inf")
+        self.subscribers: set[queue.Queue] = set()
+        self.window = None
 
-    print(text, file=sys.stderr)
-    if not question:
-        return False
-    return input("Продовжити? [y/N] ").strip().lower().startswith("y")
+    def load_packs(self, force: bool = False) -> list[install.Pack]:
+        # Під замком: паралельні запити чекають на один запит до мережі, а не дублюють його.
+        with self.lock:
+            if force or time.monotonic() - self.packs_time > PACKS_TTL:
+                self.packs = install.list_packs()
+                self.packs_time = time.monotonic()
+            return self.packs
 
+    def find_pack(self, pack_id: str) -> install.Pack | None:
+        return next((pack for pack in self.packs if pack.id == pack_id), None)
 
-def alert(title: str, details: str = ""):
-    text = f"{title}\n\n{details}" if details else title
-    log.error("%s %s", title, details)
-    try:
-        _dialog(text, question=False)
-    except Exception as error:
-        log.warning("Діалог недоступний: %s", error)
-        print(text, file=sys.stderr)
+    def server_status(self) -> dict:
+        if time.monotonic() - self.servers_time >= STATUS_TTL:
+            servers = {pack.id: pack.server for pack in self.packs if pack.server}
+            with ThreadPoolExecutor(max_workers=8) as pool:
+                self.servers = dict(zip(servers, pool.map(game.server_status, servers.values())))
+            self.servers_time = time.monotonic()
+        return self.servers
 
+    def notify(self, message: str, percent: float | None = None):
+        payload = json.dumps({"message": message, "percent": percent})
+        with self.lock:
+            channels = list(self.subscribers)
+        for channel in channels:
+            channel.put(payload)
 
-def ask(question: str) -> bool:
-    try:
-        return _dialog(question, question=True)
-    except Exception as error:
-        log.warning("Діалог недоступний: %s", error)
-        return False
-
-
-def excepthook(kind, value, tb):
-    if issubclass(kind, KeyboardInterrupt):
-        return sys.__excepthook__(kind, value, tb)
-    alert(f"Помилка: {value}",
-          f"Версія {VERSION}\n" + "".join(traceback.format_exception(kind, value, tb)))
-
-
-sys.excepthook = excepthook
-
-
-def notify(message: str, percent: float | None = None):
-    payload = json.dumps({"message": message, "percent": percent})
-    for channel in list(subscribers):
-        channel.put(payload)
+    def subscribe(self, channel: queue.Queue, active: bool):
+        with self.lock:
+            (self.subscribers.add if active else self.subscribers.discard)(channel)
 
 
-def find_pack(pack_id: str) -> dict | None:
-    return next((pack for pack in packs_cache if pack["id"] == pack_id), None)
+state = State()
 
 
-@app.route("/events")
-def events():
-    channel: queue.Queue = queue.Queue()
-    subscribers.add(channel)
+def avatar_uri() -> str:
+    if not state.account.uuid:
+        return ""
+    cached = install.avatar_path(state.account.uuid)
+    if not cached.is_file():
+        return "/head"
+    return "data:image/png;base64," + base64.b64encode(cached.read_bytes()).decode()
 
-    def stream():
-        try:
-            while True:
-                yield f"data: {channel.get()}\n\n"
-        finally:
-            subscribers.discard(channel)
 
-    return Response(stream(), mimetype="text/event-stream",
-                    headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+def warm_avatar():
+    if state.account.uuid:
+        install.fetch_avatar(state.account.uuid)
 
+
+def body() -> dict:
+    return request.get_json(silent=True) or {}
+
+
+def result(error: str | None = None):
+    return jsonify({"success": False, "error": error} if error else {"success": True})
+
+
+# ── Маршрути ──────────────────────────────────────────────────────────────────
 
 @app.route("/")
 def index():
@@ -123,186 +109,136 @@ def index():
     modes = screen_modes()
     if settings.window not in modes:
         modes.append(settings.window)
-
     return render_template("index.html", settings=settings, ram_max=max_ram_gb(),
-                           window_choices=modes, account=account.name, head=head_uri(),
+                           window_choices=modes, account=state.account.name, head=avatar_uri(),
                            version=VERSION)
 
 
-def load_packs(force: bool = False) -> list[dict]:
-    global packs_cache, packs_fetched
-    if force or time.monotonic() - packs_fetched > PACKS_TTL:
-        packs_cache = install.list_packs()
-        packs_fetched = time.monotonic()
-    for pack in packs_cache:
-        pack["status"] = install.pack_status(pack)
-    return packs_cache
+@app.route("/events")
+def events():
+    channel: queue.Queue = queue.Queue()
+    state.subscribe(channel, True)
+
+    def stream():
+        try:
+            while True:
+                yield f"data: {channel.get()}\n\n"
+        finally:
+            state.subscribe(channel, False)
+
+    return Response(stream(), mimetype="text/event-stream",
+                    headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
 
 @app.route("/api/packs")
 def api_packs():
-    load_packs()
-    settings = Settings.load()
-    selected = settings.pack if find_pack(settings.pack) else (
-        packs_cache[0]["id"] if packs_cache else "")
-    return jsonify({"packs": packs_cache, "selected": selected})
+    packs = state.load_packs()
+    chosen = Settings.load().pack
+    selected = chosen if state.find_pack(chosen) else (packs[0].id if packs else "")
+    return jsonify({"packs": [pack.to_json() for pack in packs], "selected": selected})
 
 
 @app.route("/api/news")
 def api_news():
-    return jsonify(load_news())
+    return jsonify(install.news())
 
 
 @app.route("/status")
 def status():
-    now = time.monotonic()
-    if now - status_cache["time"] < STATUS_TTL:
-        return jsonify(status_cache["data"])
-
-    servers = {pack["id"]: pack["server"] for pack in packs_cache if pack.get("server")}
-    with ThreadPoolExecutor(max_workers=8) as pool:
-        pinged = dict(zip(servers, pool.map(game.server_status, servers.values())))
-
-    status_cache.update(time=now, data=pinged)
-    return jsonify(pinged)
+    return jsonify(state.server_status())
 
 
 @app.route("/login", methods=["POST"])
 def login():
     try:
-        game.open_login_window(account.begin_login())
-        return jsonify({"success": True})
+        game.open_login_window(state.account.begin_login())
     except Exception as error:
         log.error("Login error: %s", error)
-        return jsonify({"success": False, "error": str(error)})
+        return result(str(error))
+    return result()
 
 
 @app.route("/auth/callback")
 def auth_callback():
-    code, state = request.args.get("code"), request.args.get("state")
-    if not code or not state:
+    code, auth_state = request.args.get("code"), request.args.get("state")
+    if not code or not auth_state:
         return render_template("callback.html", title="Помилка авторизації",
                                message="Відсутні параметри авторизації", success=False)
-    ok, reason = account.complete_login(code, state)
+    ok, reason = state.account.complete_login(code, auth_state)
     if ok:
-        warm_head()
-        notify("auth_success")
+        warm_avatar()
+        state.notify("auth_success")
     return render_template("callback.html",
                            title="Авторизація успішна!" if ok else "Помилка авторизації",
                            message="Можете закрити це вікно" if ok else reason, success=ok)
 
 
-def fetch_head(uuid: str) -> bytes | None:
-    cached = CACHE_DIR / f"head-{uuid}.png"
-    if cached.is_file() and time.time() - cached.stat().st_mtime < 86400:
-        return cached.read_bytes()
-
-    for url in (f"https://minotar.net/helm/{uuid}/36.png",
-                f"https://mc-heads.net/avatar/{uuid}/36",
-                f"https://crafatar.com/avatars/{uuid}?size=36&overlay"):
-        try:
-            response = requests.get(url, timeout=5, headers={"User-Agent": USER_AGENT})
-            response.raise_for_status()
-            cached.write_bytes(response.content)
-            return response.content
-        except Exception as error:
-            log.debug("Голова недоступна з %s: %s", url, error)
-
-    return cached.read_bytes() if cached.is_file() else None
-
-
-def head_uri() -> str:
-    if not account.uuid:
-        return ""
-    cached = CACHE_DIR / f"head-{account.uuid}.png"
-    if not cached.is_file():
-        return "/head"
-    return "data:image/png;base64," + base64.b64encode(cached.read_bytes()).decode()
-
-
-def warm_head():
-    if account.uuid:
-        fetch_head(account.uuid)
-
-
 @app.route("/head")
 def head():
-    if not account.uuid:
-        return ("", 404)
-    image = fetch_head(account.uuid)
+    image = install.fetch_avatar(state.account.uuid) if state.account.uuid else None
     if not image:
-        return ("", 404)
+        return "", 404
     return Response(image, mimetype="image/png", headers={"Cache-Control": "max-age=86400"})
 
 
 @app.route("/logout", methods=["POST"])
 def logout():
-    account.logout()
-    return jsonify({"success": True})
+    state.account.logout()
+    return result()
+
+
+PACK_ACTIONS = {"unlink": lambda instance: instance.set_linked(False),
+                "relink": lambda instance: instance.set_linked(True),
+                "reinstall": install.Instance.wipe}
 
 
 @app.route("/pack/<action>", methods=["POST"])
 def pack_action(action):
-    pack = find_pack((request.get_json(silent=True) or {}).get("pack", ""))
+    pack = state.find_pack(body().get("pack", ""))
     if not pack:
-        return jsonify({"success": False, "error": "Модпак не знайдено"})
+        return result("Модпак не знайдено")
+    if action not in PACK_ACTIONS:
+        return result("Невідома дія")
     try:
-        if action == "unlink":
-            install.set_linked(pack["id"], False)
-        elif action == "relink":
-            install.set_linked(pack["id"], True)
-        elif action == "reinstall":
-            install.wipe(pack["id"])
-        else:
-            return jsonify({"success": False, "error": "Невідома дія"})
+        PACK_ACTIONS[action](pack.instance)
     except Exception as error:
-        return jsonify({"success": False, "error": str(error)})
-    return jsonify({"success": True})
-
-
-@app.route("/window/<action>")
-def window_action(action):
-    if window and action == "minimize":
-        window.minimize()
-    elif action == "close":
-        threading.Timer(0.2, close).start()
-    return ("", 204)
+        return result(str(error))
+    return result()
 
 
 @app.route("/start", methods=["POST"])
 def start():
-    body = request.get_json(silent=True) or {}
-    settings = Settings.parse(body)
-    pack = find_pack(settings.pack)
+    data = body()
+    settings = Settings.parse(data)
+    pack = state.find_pack(settings.pack)
     if not pack:
-        return jsonify({"success": False, "error": "Модпак не обрано"})
-    if not account.logged_in:
-        return jsonify({"success": False, "error": "Потрібна авторизація Microsoft"})
+        return result("Модпак не обрано")
+    if not state.account.logged_in:
+        return result("Потрібна авторизація Microsoft")
     settings.save()
 
     def worker():
         try:
-            version_id, game_dir, java = install.install_pack(pack, notify,
-                                                              force=bool(body.get("force")))
-            notify("Запуск гри", 100)
-            game.launch(version_id, game_dir, java, settings, account, pack.get("server"), notify)
-            notify("Гру запущено", 100)
+            target = pack.instance.install(pack, state.notify, force=bool(data.get("force")))
+            state.notify("Запуск гри", 100)
+            game.launch(target, settings, state.account, pack.server, state.notify)
+            state.notify("Гру запущено", 100)
             threading.Timer(3.0, close).start()
         except Exception as error:
             log.exception("Помилка запуску")
-            notify(f"Помилка: {error}")
+            state.notify(f"Помилка: {error}")
 
     threading.Thread(target=worker, daemon=True).start()
-    return jsonify({"success": True})
+    return result()
 
 
 @app.route("/folder", methods=["POST"])
 def folder():
-    pack_id = (request.get_json(silent=True) or {}).get("pack", "")
+    pack_id = body().get("pack", "")
     target = INSTANCES_DIR / pack_id if pack_id else INSTANCES_DIR
     target.mkdir(parents=True, exist_ok=True)
     open_path(target)
-    return jsonify({"success": True})
+    return result()
 
 
 @app.route("/external")
@@ -310,43 +246,29 @@ def external():
     url = urllib.parse.unquote(request.args.get("url", ""))
     if url.startswith(("http://", "https://")):
         open_path(url)
-    return ("", 204)
+    return "", 204
+
+
+@app.route("/window/<action>")
+def window_action(action):
+    if state.window and action == "minimize":
+        state.window.minimize()
+    elif action == "close":
+        threading.Timer(0.2, close).start()
+    return "", 204
 
 
 @app.route("/close")
 def close_route():
     threading.Timer(0.5, close).start()
-    return jsonify({"success": True})
+    return result()
 
 
-def load_news() -> list:
-    cache = CACHE_DIR / "news.json"
-    try:
-        response = requests.get(NEWS_INDEX, timeout=10, headers={"User-Agent": USER_AGENT})
-        response.raise_for_status()
-        news = response.json()
-        cache.write_text(json.dumps(news, ensure_ascii=False), "utf-8")
-        return news
-    except Exception as error:
-        log.error("Не вдалося завантажити новини: %s", error)
-    try:
-        return json.loads(cache.read_text("utf-8"))
-    except Exception:
-        return []
-
-
-LEGACY_SIGNS = ("qqq-craft.exe", "launcher.exe", "unins000.exe", "saves", "mods", "versions")
-
+# ── Старт і завершення ────────────────────────────────────────────────────────
 
 def legacy_dirs() -> list[Path]:
-    if IS_WINDOWS:
-        local = Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData/Local"))
-        found = [local / "Programs" / "qqq-craft", local / "qqq-craft"]
-    else:
-        found = [Path.home() / ".local/share/qqq-craft", Path.home() / ".qqq-craft"]
-
     protected = [path.resolve() for path in (APP_DIR, BASE_DIR, Path(sys.executable).parent)]
-    return [path for path in found if path.is_dir() and not any(
+    return [path for path in LEGACY_DIRS if path.is_dir() and not any(
         current == path.resolve() or path.resolve() in current.parents or
         current in path.resolve().parents for current in protected)]
 
@@ -360,9 +282,9 @@ def notify_legacy():
     for old in legacy_dirs():
         if not any((old / name).exists() for name in LEGACY_SIGNS):
             continue
-        size = sum(item.stat().st_size for item in old.rglob("*") if item.is_file())
-        log.info("Стара тека: %s (%.1f ГБ)", old, size / 1024 ** 3)
-        if ask(f"Файли попередньої версії лаунчера ({size / 1024 ** 3:.1f} ГБ) лишились тут:\n"
+        size = sum(item.stat().st_size for item in old.rglob("*") if item.is_file()) / 1024 ** 3
+        log.info("Стара тека: %s (%.1f ГБ)", old, size)
+        if ask(f"Файли попередньої версії лаунчера ({size:.1f} ГБ) лишились тут:\n"
                f"{old}\n\nСвіти, скріншоти й записи можна перенести звідти вручну.\n"
                "Відкрити цю папку?"):
             open_path(old)
@@ -371,11 +293,11 @@ def notify_legacy():
     marker.write_text("", "utf-8")
 
 
-def offer_update():
-    update = check_update()
+def offer_update(shown: threading.Event):
+    update = install.check_update()
     if not update or not update["outdated"]:
         return
-    dialog_shown.set()
+    shown.set()
     if ask(f"Доступна нова версія лаунчера {update['latest']}.\nЗавантажити її зараз?"):
         open_path(update["url"])
         close()
@@ -383,8 +305,8 @@ def offer_update():
 
 def close():
     try:
-        if window:
-            window.destroy()
+        if state.window:
+            state.window.destroy()
         else:
             os._exit(0)
     except Exception:
@@ -392,14 +314,13 @@ def close():
 
 
 def open_window():
-    global window
     url = f"http://127.0.0.1:{FLASK_PORT}/"
     try:
         import webview
-        window = webview.create_window(f"QQQ — Час стати легендою! ({VERSION})", url,
-                                       width=1280, height=720, min_size=(1000, 640),
-                                       frameless=True, easy_drag=False,
-                                       background_color="#4b2e2a")
+        state.window = webview.create_window(f"QQQ — Час стати легендою! ({VERSION})", url,
+                                             width=1280, height=720, min_size=(1000, 640),
+                                             frameless=True, easy_drag=False,
+                                             background_color="#4b2e2a")
         webview.start()
     except Exception as error:
         log.warning("Вікно недоступне (%s), відкриваю браузер", error)
@@ -408,7 +329,28 @@ def open_window():
         threading.Event().wait()
 
 
+def excepthook(kind, value, tb):
+    if issubclass(kind, KeyboardInterrupt):
+        return sys.__excepthook__(kind, value, tb)
+    alert(f"Помилка: {value}",
+          f"Версія {VERSION}\n" + "".join(traceback.format_exception(kind, value, tb)))
+
+
+def background(target, *args) -> threading.Thread:
+    thread = threading.Thread(target=target, args=args, daemon=True)
+    thread.start()
+    return thread
+
+
 def main():
+    config.init()
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+        handlers=[logging.StreamHandler(),
+                  logging.FileHandler(LOGS_DIR / "launcher.log", encoding="utf-8")])
+    sys.excepthook = excepthook
+
     with socket.socket() as probe:
         if probe.connect_ex(("127.0.0.1", FLASK_PORT)) == 0:
             alert("Лаунчер вже запущений")
@@ -416,18 +358,15 @@ def main():
 
     notify_legacy()
 
-    checker = threading.Thread(target=offer_update, daemon=True)
-    checker.start()
-    threading.Thread(target=warm_head, daemon=True).start()
-    threading.Thread(target=lambda: load_packs(force=True), daemon=True).start()
-
-    threading.Thread(
-        target=lambda: app.run(host="127.0.0.1", port=FLASK_PORT, threaded=True,
-                               debug=False, use_reloader=False),
-        daemon=True).start()
+    update_shown = threading.Event()
+    checker = background(offer_update, update_shown)
+    background(warm_avatar)
+    background(state.load_packs, True)
+    background(lambda: app.run(host="127.0.0.1", port=FLASK_PORT, threaded=True,
+                               debug=False, use_reloader=False))
 
     checker.join(timeout=3)
-    if dialog_shown.is_set():
+    if update_shown.is_set():
         checker.join()
 
     open_window()

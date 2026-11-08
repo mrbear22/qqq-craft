@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import argparse
+import hashlib
 import json
 import os
 import platform
@@ -7,6 +8,8 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
+import zipfile
 from pathlib import Path
 
 ROOT = Path(__file__).parent
@@ -193,25 +196,40 @@ def publish_news():
                    env={**os.environ, "GITHUB_REPOSITORY": slug}, check=True)
 
 
+OCTET = r"(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)"
+SERVER_PATTERN = re.compile(rf"\b(?:(?:[a-z0-9-]+\.)+[a-z]{{2,}}|{OCTET}(?:\.{OCTET}){{3}})(?::\d{{1,5}})?\b",
+                            re.I)  # домен або IPv4, з портом чи без
+
+
+def pack_entry(archive: Path) -> dict:
+    """Усе про пак — із самого .mrpack: id — ім'я файлу, назва й версія — з експорту, сервер — з опису."""
+    with zipfile.ZipFile(archive) as bundle:
+        index = json.loads(bundle.read("modrinth.index.json"))
+    entry = {"id": archive.stem, "name": index.get("name") or archive.stem,
+             "version": index["versionId"], "url": archive.name,
+             "sha1": hashlib.sha1(archive.read_bytes()).hexdigest()}
+    server = SERVER_PATTERN.search(index.get("summary", ""))
+    if server:
+        entry["server"] = server.group(0)
+    return entry
+
+
 def publish_packs():
-    """Заливає модпаки у рухомий реліз packs — окремо від релізів лаунчера."""
+    """Збирає packs.json з усіх .mrpack у packs/ і заливає в рухомий реліз packs — окремо від лаунчера.
+    packs.json живе тільки в релізі: на диску його немає. Запускається GitHub Action при пуші в packs/."""
     gh = find_gh()
     if not gh:
         sys.exit("Потрібен GitHub CLI: winget install GitHub.cli && gh auth login")
 
     folder = ROOT / "packs"
-    index = folder / "packs.json"
-    if not index.is_file():
-        sys.exit(f"Немає {index}")
+    archives = sorted(folder.glob("*.mrpack"))
+    if not archives:
+        sys.exit(f"У {folder} немає жодного .mrpack")
 
-    packs = json.loads(index.read_text("utf-8"))
-    files = [index]
+    packs = [pack_entry(archive) for archive in archives]
     for pack in packs:
-        target = folder / Path(pack["url"]).name
-        if not target.is_file():
-            sys.exit(f"У packs.json є {pack['id']}, але файлу {target.name} немає")
-        files.append(target)
-        print(f"{pack['id']}: {pack['version']} ({target.stat().st_size / 1024 ** 2:.1f} МБ)")
+        server = pack.get("server", "без сервера — допиши адресу в опис пака")
+        print(f"{pack['id']}: {pack['name']} {pack['version']}, {server}")
 
     exists = subprocess.run([gh, "release", "view", PACKS_TAG], cwd=ROOT,
                             capture_output=True).returncode == 0
@@ -220,8 +238,12 @@ def publish_packs():
                         "--notes", "Файли модпаків для лаунчера. Не є релізом лаунчера.",
                         "--latest=false"], cwd=ROOT, check=True)
 
-    subprocess.run([gh, "release", "upload", PACKS_TAG, *map(str, files), "--clobber"],
-                   cwd=ROOT, check=True)
+    with tempfile.TemporaryDirectory() as temporary:
+        index = Path(temporary) / "packs.json"
+        index.write_text(json.dumps(packs, ensure_ascii=False, indent=2) + "\n", "utf-8")
+        files = [index, *archives]
+        subprocess.run([gh, "release", "upload", PACKS_TAG, *map(str, files), "--clobber"],
+                       cwd=ROOT, check=True)
     print(f"Залито {len(files)} файлів у реліз {PACKS_TAG}")
 
 

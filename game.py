@@ -1,7 +1,7 @@
+"""Гравець і гра: акаунт Microsoft, вікно входу, пінг сервера, запуск."""
 import json
 import logging
 import os
-import shutil
 import socket
 import struct
 import subprocess
@@ -11,7 +11,8 @@ from pathlib import Path
 
 import minecraft_launcher_lib as mll
 
-from config import BASE_DIR, CLIENT_ID, IS_WINDOWS, REDIRECT_URL, Settings, VERSION
+from config import BASE_DIR, CLIENT_ID, REDIRECT_URL, Settings, VERSION, detached
+from install import LaunchTarget
 
 log = logging.getLogger(__name__)
 
@@ -24,64 +25,10 @@ except ImportError:
     keyring = None
 
 
-CHROMIUM_NAMES = ["chrome", "google-chrome", "google-chrome-stable", "chromium",
-                  "chromium-browser", "msedge", "microsoft-edge", "microsoft-edge-stable",
-                  "brave", "brave-browser", "vivaldi", "vivaldi-stable", "opera"]
-CHROMIUM_MARKERS = ("chrome.exe", "msedge.exe", "brave.exe", "vivaldi.exe", "opera.exe",
-                    "chromium.exe")
-
-
-def _default_browser_windows() -> str | None:
-    try:
-        import winreg
-        key = (r"Software\Microsoft\Windows\Shell\Associations\UrlAssociations"
-               r"\https\UserChoice")
-        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, key) as handle:
-            prog_id = winreg.QueryValueEx(handle, "ProgId")[0]
-        with winreg.OpenKey(winreg.HKEY_CLASSES_ROOT,
-                            rf"{prog_id}\shell\open\command") as handle:
-            command = winreg.QueryValueEx(handle, "")[0]
-    except Exception as error:
-        log.debug("Типовий браузер не визначено: %s", error)
-        return None
-
-    path = command.split('"')[1] if command.startswith('"') else command.split(" ")[0]
-    return path if path.lower().endswith(CHROMIUM_MARKERS) and Path(path).is_file() else None
-
-
-def _chromium_candidates() -> list[str]:
-    found = []
-    if IS_WINDOWS:
-        default = _default_browser_windows()
-        if default:
-            found.append(default)
-        roots = [os.environ.get("PROGRAMFILES", r"C:\Program Files"),
-                 os.environ.get("PROGRAMFILES(X86)", r"C:\Program Files (x86)"),
-                 os.environ.get("LOCALAPPDATA", "")]
-        relative = [r"Google\Chrome\Application\chrome.exe",
-                    r"Microsoft\Edge\Application\msedge.exe",
-                    r"BraveSoftware\Brave-Browser\Application\brave.exe",
-                    r"Vivaldi\Application\vivaldi.exe",
-                    r"Chromium\Application\chrome.exe"]
-        found += [str(Path(root) / tail) for root in roots if root for tail in relative
-                  if (Path(root) / tail).is_file()]
-    found += [path for name in CHROMIUM_NAMES if (path := shutil.which(name))]
-    return list(dict.fromkeys(found))
-
-
 def open_login_window(url: str):
-    for browser in _chromium_candidates():
-        try:
-            subprocess.Popen([browser, f"--app={url}", "--window-size=500,720"],
-                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                             start_new_session=not IS_WINDOWS)
-            log.info("Логін відкрито через %s", browser)
-            return
-        except Exception as error:
-            log.warning("Не вдалося відкрити %s: %s", browser, error)
-
-    log.info("Chromium-браузер не знайдено, відкриваю типовий")
-    webbrowser.open(url)
+    """Вхід у типовому браузері системи — там збережені паролі людини. Повернення на localhost-callback."""
+    if not webbrowser.open(url):
+        raise RuntimeError("Не вдалося відкрити браузер")
 
 
 def _varint(value: int) -> bytes:
@@ -135,6 +82,17 @@ def server_status(address: str, timeout: float = 3.0) -> dict | None:
         return None
 
 
+def _keyring(action: str, *args):
+    """Виклик сховища ОС. False — сховище недоступне або відмовило."""
+    if keyring is None:
+        return False
+    try:
+        return getattr(keyring, action)(SERVICE, ACCOUNT, *args)
+    except Exception as error:
+        log.debug("Сховище ОС: %s не вдалося: %s", action, error)
+        return False
+
+
 class TokenStore:
     def __init__(self):
         self.profile_path = BASE_DIR / "profile.json"
@@ -145,16 +103,13 @@ class TokenStore:
             {"name": data["name"], "id": data["id"], "saved_at": time.time()},
             ensure_ascii=False), "utf-8")
         token = data["refresh_token"]
+        if keyring and _keyring("set_password", token) is not False:
+            self.fallback_path.unlink(missing_ok=True)
+            return
         if keyring:
-            try:
-                keyring.set_password(SERVICE, ACCOUNT, token)
-                self.fallback_path.unlink(missing_ok=True)
-                return
-            except Exception as error:
-                log.warning("Сховище ОС недоступне (%s), використовую файл", error)
+            log.warning("Сховище ОС недоступне, використовую файл")
         self.fallback_path.write_text(token, "utf-8")
-        if not IS_WINDOWS:
-            os.chmod(self.fallback_path, 0o600)
+        os.chmod(self.fallback_path, 0o600)
 
     def profile(self) -> dict:
         try:
@@ -163,24 +118,16 @@ class TokenStore:
             return {}
 
     def token(self) -> str | None:
-        if keyring:
-            try:
-                token = keyring.get_password(SERVICE, ACCOUNT)
-                if token:
-                    return token
-            except Exception:
-                pass
+        token = _keyring("get_password")
+        if token:
+            return token
         try:
             return self.fallback_path.read_text("utf-8").strip() or None
         except Exception:
             return None
 
     def clear(self):
-        if keyring:
-            try:
-                keyring.delete_password(SERVICE, ACCOUNT)
-            except Exception:
-                pass
+        _keyring("delete_password")
         self.fallback_path.unlink(missing_ok=True)
         self.profile_path.unlink(missing_ok=True)
 
@@ -193,12 +140,16 @@ class Account:
         self._verifier = None
 
     @property
+    def _profile(self) -> dict:
+        return self.session or self.store.profile()
+
+    @property
     def name(self) -> str | None:
-        return (self.session or self.store.profile()).get("name")
+        return self._profile.get("name")
 
     @property
     def uuid(self) -> str | None:
-        return (self.session or self.store.profile()).get("id")
+        return self._profile.get("id")
 
     @property
     def logged_in(self) -> bool:
@@ -264,8 +215,9 @@ def _write_options(game_dir: Path, settings: Settings):
     path.write_text("\n".join(lines) + "\n", "utf-8")
 
 
-def launch(version_id: str, game_dir: Path, java: str, settings: Settings,
-           account: Account, server: str | None, progress) -> subprocess.Popen:
+def launch(target: LaunchTarget, settings: Settings, account: Account,
+           server: str | None, progress) -> subprocess.Popen:
+    version_id, game_dir, java = target
     auth = account.ensure_session()
     if not auth:
         raise RuntimeError("Потрібна авторизація Microsoft")
@@ -292,12 +244,7 @@ def launch(version_id: str, game_dir: Path, java: str, settings: Settings,
     command = mll.command.get_minecraft_command(version_id, str(game_dir), options)
 
     output = None if settings.console else subprocess.DEVNULL
-    kwargs = {"cwd": str(game_dir), "stdout": output, "stderr": output}
-    if IS_WINDOWS and not settings.console:
-        kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
-    else:
-        kwargs["start_new_session"] = True
-
-    process = subprocess.Popen(command, **kwargs)
+    process = subprocess.Popen(command, cwd=str(game_dir), stdout=output, stderr=output,
+                               **detached(settings.console))
     log.info("Гру запущено, PID %s", process.pid)
     return process

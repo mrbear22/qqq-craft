@@ -1,15 +1,22 @@
+"""Середовище: версія, шляхи, налаштування, залізо і все, що залежить від ОС."""
 import json
+import logging
 import os
 import platform
 import re
+import shutil
+import stat
 import subprocess
 import sys
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
-import requests
+import platformdirs
+import psutil
 
-VERSION = "1.0.32.0"
+log = logging.getLogger(__name__)
+
+VERSION = "1.0.33.0"
 
 GITHUB_REPO = "mrbear22/qqq-craft"
 LATEST_RELEASE = f"https://github.com/{GITHUB_REPO}/releases/latest"
@@ -22,10 +29,20 @@ REDIRECT_URL = f"http://localhost:{FLASK_PORT}/auth/callback"
 
 USER_AGENT = f"qqq-craft-launcher/{VERSION} (+https://qqq-craft.top)"
 
-IS_WINDOWS = platform.system() == "Windows"
+# ── Система: усе, що залежить від ОС, визначається тут і більше ніде ─────────
 
-if platform.system() not in ("Windows", "Linux"):
+OS_NAME = {"Windows": "windows", "Linux": "linux"}.get(platform.system())  # як у правилах Mojang
+if OS_NAME is None:
     raise OSError(f"Непідтримувана система: {platform.system()}")
+IS_WINDOWS = OS_NAME == "windows"
+ARCH = {"amd64": "x64", "x86_64": "x64", "arm64": "arm64", "aarch64": "arm64",
+        "x86": "x86", "i386": "x86", "i686": "x86"}.get(platform.machine().lower(), "x64")
+EXE_SUFFIX = ".exe" if IS_WINDOWS else ""
+
+# Де лежали файли старого лаунчера до переходу на теку даних системи.
+LEGACY_DIRS = ([Path(platformdirs.user_data_dir(appauthor=False)) / "Programs" / "qqq-craft",
+                Path(platformdirs.user_data_dir("qqq-craft", appauthor=False))] if IS_WINDOWS else
+               [Path(platformdirs.user_data_dir("qqq-craft")), Path.home() / ".qqq-craft"])
 
 
 def _app_dir() -> Path:
@@ -48,9 +65,7 @@ def _data_dir() -> Path:
         except Exception:
             pass
 
-    if IS_WINDOWS:
-        return Path(os.environ.get("APPDATA", Path.home() / "AppData/Roaming")) / "qqq-craft"
-    return Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local/share")) / "qqq-craft"
+    return Path(platformdirs.user_data_dir("qqq-craft", appauthor=False, roaming=True))
 
 
 APP_DIR = _app_dir()
@@ -59,35 +74,18 @@ INSTANCES_DIR = BASE_DIR / "instances"
 CACHE_DIR = BASE_DIR / "cache"
 LOGS_DIR = BASE_DIR / "logs"
 
-for _d in (BASE_DIR, INSTANCES_DIR, CACHE_DIR, LOGS_DIR):
-    _d.mkdir(parents=True, exist_ok=True)
+
+def init():
+    for folder in (BASE_DIR, INSTANCES_DIR, CACHE_DIR, LOGS_DIR):
+        folder.mkdir(parents=True, exist_ok=True)
+
 
 RAM_PATTERN = re.compile(r"^(\d{1,3})G$")
 WINDOW_PATTERN = re.compile(r"^(\d{3,5})x(\d{3,5})$")
 
 
 def total_ram_gb() -> int:
-    try:
-        if IS_WINDOWS:
-            import ctypes
-
-            class Status(ctypes.Structure):
-                _fields_ = [("dwLength", ctypes.c_ulong), ("dwMemoryLoad", ctypes.c_ulong),
-                            ("ullTotalPhys", ctypes.c_ulonglong), ("ullAvailPhys", ctypes.c_ulonglong),
-                            ("ullTotalPageFile", ctypes.c_ulonglong), ("ullAvailPageFile", ctypes.c_ulonglong),
-                            ("ullTotalVirtual", ctypes.c_ulonglong), ("ullAvailVirtual", ctypes.c_ulonglong),
-                            ("ullAvailExtendedVirtual", ctypes.c_ulonglong)]
-
-            status = Status()
-            status.dwLength = ctypes.sizeof(Status)
-            ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(status))
-            return max(2, round(status.ullTotalPhys / 1024 ** 3))
-        for line in Path("/proc/meminfo").read_text().splitlines():
-            if line.startswith("MemTotal:"):
-                return max(2, round(int(line.split()[1]) / 1024 ** 2))
-    except Exception:
-        pass
-    return 8
+    return max(2, round(psutil.virtual_memory().total / 1024 ** 3))
 
 
 def max_ram_gb() -> int:
@@ -95,49 +93,31 @@ def max_ram_gb() -> int:
     return max(2, min(total - 2, int(total * 0.75)))
 
 
+COMMON_MODES = ("854x480", "1280x720", "1280x800", "1366x768", "1440x900", "1600x900",
+                "1680x1050", "1920x1080", "1920x1200", "2560x1440", "2560x1600", "3840x2160")
+
+
 def screen_modes() -> list[str]:
-    modes = set()
+    """Типові роздільності, що влазять у найбільший монітор, плюс роздільності самих моніторів."""
     try:
-        if IS_WINDOWS:
-            import ctypes
+        import webview
+        screens = {f"{screen.width}x{screen.height}" for screen in webview.screens}
+    except Exception as error:
+        log.debug("Монітори не визначено: %s", error)
+        screens = set()
+    width, height = _size(max(screens, key=_pixels, default="1920x1080"))
+    fits = {mode for mode in COMMON_MODES if _size(mode)[0] <= width and _size(mode)[1] <= height}
+    return sorted(fits | screens, key=lambda mode: -_pixels(mode))
 
-            class DevMode(ctypes.Structure):
-                _fields_ = [("dmDeviceName", ctypes.c_wchar * 32), ("dmSpecVersion", ctypes.c_ushort),
-                            ("dmDriverVersion", ctypes.c_ushort), ("dmSize", ctypes.c_ushort),
-                            ("dmDriverExtra", ctypes.c_ushort), ("dmFields", ctypes.c_ulong),
-                            ("dmOrientation", ctypes.c_short), ("dmPaperSize", ctypes.c_short),
-                            ("dmPaperLength", ctypes.c_short), ("dmPaperWidth", ctypes.c_short),
-                            ("dmScale", ctypes.c_short), ("dmCopies", ctypes.c_short),
-                            ("dmDefaultSource", ctypes.c_short), ("dmPrintQuality", ctypes.c_short),
-                            ("dmColor", ctypes.c_short), ("dmDuplex", ctypes.c_short),
-                            ("dmYResolution", ctypes.c_short), ("dmTTOption", ctypes.c_short),
-                            ("dmCollate", ctypes.c_short), ("dmFormName", ctypes.c_wchar * 32),
-                            ("dmLogPixels", ctypes.c_ushort), ("dmBitsPerPel", ctypes.c_ulong),
-                            ("dmPelsWidth", ctypes.c_ulong), ("dmPelsHeight", ctypes.c_ulong),
-                            ("dmDisplayFlags", ctypes.c_ulong), ("dmDisplayFrequency", ctypes.c_ulong)]
 
-            mode, index = DevMode(), 0
-            mode.dmSize = ctypes.sizeof(DevMode)
-            while ctypes.windll.user32.EnumDisplaySettingsW(None, index, ctypes.byref(mode)):
-                if mode.dmPelsWidth >= 854 and mode.dmPelsHeight >= 480:
-                    modes.add(f"{mode.dmPelsWidth}x{mode.dmPelsHeight}")
-                index += 1
-        else:
-            output = subprocess.run(["xrandr"], capture_output=True, text=True, timeout=5).stdout
-            for match in re.finditer(r"^\s+(\d{3,5})x(\d{3,5})", output, re.M):
-                width, height = int(match.group(1)), int(match.group(2))
-                if width >= 854 and height >= 480:
-                    modes.add(f"{width}x{height}")
-    except Exception:
-        pass
-
-    modes.update({"1280x720", "1600x900", "1920x1080"})
-    return sorted(modes, key=lambda mode: -_pixels(mode))
+def _size(mode: str) -> tuple[int, int]:
+    width, height = mode.split("x")
+    return int(width), int(height)
 
 
 def _pixels(mode: str) -> int:
-    width, height = mode.split("x")
-    return int(width) * int(height)
+    width, height = _size(mode)
+    return width * height
 
 
 @dataclass
@@ -194,31 +174,57 @@ class Settings:
 
     @property
     def resolution(self) -> tuple[int, int]:
-        width, height = self.window.split("x")
-        return int(width), int(height)
-
-
-def check_update() -> dict | None:
-    try:
-        response = requests.head(LATEST_RELEASE, timeout=8, allow_redirects=True,
-                                 headers={"User-Agent": USER_AGENT})
-        response.raise_for_status()
-        latest = response.url.rstrip("/").rsplit("/", 1)[-1]
-        if not latest or not latest[0].isdigit():
-            return None
-    except Exception:
-        return None
-    return {"outdated": _as_tuple(latest) > _as_tuple(VERSION),
-            "latest": latest, "url": response.url}
-
-
-def _as_tuple(value: str) -> tuple:
-    return tuple(int(part) if part.isdigit() else 0 for part in value.split("."))
+        return _size(self.window)
 
 
 def open_path(target: str | Path):
-    target = str(target)
     if IS_WINDOWS:
-        os.startfile(target)
+        os.startfile(str(target))
     else:
-        subprocess.Popen(["xdg-open", target], start_new_session=True)
+        subprocess.Popen(["xdg-open", str(target)], start_new_session=True)
+
+
+def detached(console: bool) -> dict:
+    """Параметри Popen для гри: без вікна консолі на Windows, окрема сесія на Linux."""
+    if IS_WINDOWS and not console:
+        return {"creationflags": subprocess.CREATE_NO_WINDOW}
+    return {"start_new_session": True}
+
+
+def make_executable(path: Path):
+    path.chmod(path.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+
+
+def _dialog(text: str, question: bool) -> bool:
+    if IS_WINDOWS:
+        import ctypes
+        style = 0x24 if question else 0x10
+        return ctypes.windll.user32.MessageBoxW(None, text, "QQQ-CRAFT", style) == 6
+
+    for tool, args in (("zenity", ["--question" if question else "--error", f"--text={text}"]),
+                       ("kdialog", ["--yesno" if question else "--error", text])):
+        if shutil.which(tool):
+            return subprocess.run([tool, *args]).returncode == 0
+
+    print(text, file=sys.stderr)
+    if not question:
+        return False
+    return input("Продовжити? [y/N] ").strip().lower().startswith("y")
+
+
+def alert(title: str, details: str = ""):
+    text = f"{title}\n\n{details}" if details else title
+    log.error("%s %s", title, details)
+    try:
+        _dialog(text, question=False)
+    except Exception as error:
+        log.warning("Діалог недоступний: %s", error)
+        print(text, file=sys.stderr)
+
+
+def ask(question: str) -> bool:
+    try:
+        return _dialog(question, question=True)
+    except Exception as error:
+        log.warning("Діалог недоступний: %s", error)
+        return False

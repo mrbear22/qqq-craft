@@ -9,11 +9,13 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import urllib.request
 import zipfile
 from pathlib import Path
 
 ROOT = Path(__file__).parent
 BUILD = ROOT / "build"
+PACKS = ROOT / "packs"  # локальна тека, у репозиторій не потрапляє
 
 
 def find_git() -> str | None:
@@ -53,7 +55,6 @@ def github_version() -> str | None:
     if not slug:
         return None
     try:
-        import urllib.request
         request = urllib.request.Request(
             f"https://api.github.com/repos/{slug}/releases/latest",
             headers={"User-Agent": "qqq-craft-build", "Accept": "application/vnd.github+json"})
@@ -215,16 +216,15 @@ def pack_entry(archive: Path) -> dict:
 
 
 def publish_packs():
-    """Збирає packs.json з усіх .mrpack у packs/ і заливає в рухомий реліз packs — окремо від лаунчера.
-    packs.json живе тільки в релізі: на диску його немає. Запускається GitHub Action при пуші в packs/."""
+    """Збирає packs.json з усіх .mrpack у локальній теці packs/ і заливає в рухомий реліз packs —
+    окремо від лаунчера. packs.json живе тільки в релізі: на диску його немає."""
     gh = find_gh()
     if not gh:
         sys.exit("Потрібен GitHub CLI: winget install GitHub.cli && gh auth login")
 
-    folder = ROOT / "packs"
-    archives = sorted(folder.glob("*.mrpack"))
+    archives = sorted(PACKS.glob("*.mrpack"))
     if not archives:
-        sys.exit(f"У {folder} немає жодного .mrpack")
+        sys.exit(f"У {PACKS} немає жодного .mrpack — поклади їх туди або стягни: compile.py --packs pull")
 
     packs = [pack_entry(archive) for archive in archives]
     for pack in packs:
@@ -245,6 +245,44 @@ def publish_packs():
         subprocess.run([gh, "release", "upload", PACKS_TAG, *map(str, files), "--clobber"],
                        cwd=ROOT, check=True)
     print(f"Залито {len(files)} файлів у реліз {PACKS_TAG}")
+
+
+def fetch(url: str) -> bytes:
+    request = urllib.request.Request(url, headers={"User-Agent": "qqq-craft-build"})
+    with urllib.request.urlopen(request, timeout=60) as response:
+        return response.read()
+
+
+def pull_packs():
+    """Стягує актуальні паки з релізу packs у локальну теку packs/. Реліз публічний — gh не потрібен.
+    Локальний файл, що відрізняється від релізного, не губиться: лишається поруч як .bak."""
+    slug = repo_slug()
+    if not slug:
+        sys.exit("Не вдалося визначити репозиторій з origin")
+
+    base = f"https://github.com/{slug}/releases/download/{PACKS_TAG}/"
+    try:
+        index = json.loads(fetch(base + "packs.json"))
+    except Exception as error:
+        sys.exit(f"Не вдалося отримати список паків з релізу {PACKS_TAG}: {error}")
+
+    PACKS.mkdir(exist_ok=True)
+    for pack in index:
+        target = PACKS / Path(pack["url"]).name
+        label = f"{target.name} ({pack['version']})"
+        if target.is_file() and hashlib.sha1(target.read_bytes()).hexdigest() == pack["sha1"]:
+            print(f"{label}: вже актуальний")
+            continue
+
+        data = fetch(base + pack["url"])
+        if hashlib.sha1(data).hexdigest() != pack["sha1"]:
+            sys.exit(f"{label}: завантажений файл не збігається з sha1 з packs.json")
+        if target.is_file():
+            backup = target.with_name(target.name + ".bak")
+            target.replace(backup)
+            print(f"{label}: локальний файл відрізнявся, збережено як {backup.name}")
+        target.write_bytes(data)
+        print(f"{label}: завантажено")
 
 
 VERSION_INFO = """# UTF-8
@@ -275,14 +313,15 @@ def main():
     parser.add_argument("--release", action="store_true",
                         help="підняти версію, зібрати і опублікувати реліз")
     parser.add_argument("--version", help="задати версію вручну, наприклад 1.0.29.0")
-    parser.add_argument("--packs", action="store_true",
-                        help="залити модпаки з теки packs/ і вийти")
+    parser.add_argument("--packs", nargs="?", const="push", choices=("push", "pull"),
+                        help="модпаки в локальній теці packs/: без значення (push) — залити в реліз, "
+                             "pull — стягнути актуальні з релізу")
     parser.add_argument("--news", action="store_true",
                         help="оновити новини з Discord і вийти")
     options = parser.parse_args()
 
     if options.packs:
-        publish_packs()
+        pull_packs() if options.packs == "pull" else publish_packs()
         return
 
     if options.news:

@@ -16,7 +16,7 @@ import psutil
 
 log = logging.getLogger(__name__)
 
-VERSION = "1.0.33.0"
+VERSION = "1.0.34.0"
 
 GITHUB_REPO = "mrbear22/qqq-craft"
 LATEST_RELEASE = f"https://github.com/{GITHUB_REPO}/releases/latest"

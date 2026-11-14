@@ -4,22 +4,22 @@ import json
 import logging
 import lzma
 import os
+import re
 import shutil
 import tarfile
 import threading
 import time
 import zipfile
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from dataclasses import asdict, dataclass, fields
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import NamedTuple
-from urllib.parse import urljoin
 
 import minecraft_launcher_lib as mll
 import requests
 
 from config import (ARCH, CACHE_DIR, EXE_SUFFIX, INSTANCES_DIR, LATEST_RELEASE, NEWS_INDEX, OS_NAME,
-                    PACKS_INDEX, USER_AGENT, VERSION, make_executable)
+                    PACKS_RELEASE, USER_AGENT, VERSION, make_executable)
 
 log = logging.getLogger(__name__)
 
@@ -44,8 +44,8 @@ session = requests.Session()
 session.headers["User-Agent"] = USER_AGENT
 
 
-def _sha1(path: Path) -> str:
-    digest = hashlib.sha1()
+def _checksum(path: Path, algorithm: str = "sha1") -> str:
+    digest = hashlib.new(algorithm)
     with open(path, "rb") as handle:
         for chunk in iter(lambda: handle.read(1 << 20), b""):
             digest.update(chunk)
@@ -58,7 +58,7 @@ def _valid(path: Path, sha1: str | None, size: int | None, deep: bool = True) ->
         return False
     if size is not None and path.stat().st_size != size:
         return False
-    return not (sha1 and deep) or _sha1(path) == sha1
+    return not (sha1 and deep) or _checksum(path) == sha1
 
 
 def _alternatives(url: str) -> list[str]:
@@ -101,7 +101,7 @@ def download(url: str, dest: Path, sha1: str | None = None, size: int | None = N
                     with lzma.open(part) as source, open(raw, "wb") as target:
                         shutil.copyfileobj(source, target)
                     os.replace(raw, part)
-                if sha1 and _sha1(part) != sha1:
+                if sha1 and _checksum(part) != sha1:
                     raise InstallError(f"невірна контрольна сума: {candidate}")
                 os.replace(part, dest)
                 return True
@@ -444,20 +444,55 @@ class LaunchTarget(NamedTuple):
     java: str
 
 
+OCTET = r"(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)"
+SERVER_PATTERN = re.compile(rf"\b(?:(?:[a-z0-9-]+\.)+[a-z]{{2,}}|{OCTET}(?:\.{OCTET}){{3}})(?::\d{{1,5}})?\b",
+                            re.I)  # домен або IPv4, з портом чи без
+
+
+def describe(archive: Path) -> dict:
+    """Усе про пак — із самого .mrpack: назва й версія — з експорту, сервер — з опису."""
+    with zipfile.ZipFile(archive) as bundle:
+        index = json.loads(bundle.read("modrinth.index.json"))
+    server = SERVER_PATTERN.search(index.get("summary", ""))
+    return {"name": index.get("name"), "version": index["versionId"],
+            "server": server.group(0) if server else None}
+
+
 @dataclass(frozen=True)
 class Pack:
     id: str
     name: str
     version: str
     url: str
+    size: int
+    stamp: str
     server: str | None = None
-    sha1: str | None = None
 
     @classmethod
-    def parse(cls, data: dict) -> "Pack":
-        known = {field.name for field in fields(cls)}
-        values = {key: value for key, value in data.items() if key in known}
-        return cls(**values | {"url": urljoin(PACKS_INDEX, data["url"])})
+    def read(cls, asset: dict) -> "Pack":
+        """Із релізу — лише файл і його відбиток; id — ім'я файлу, решта — з самого архіву в кеші."""
+        pack_id = asset["name"].removesuffix(".mrpack")
+        digest = asset.get("digest") or ""
+        stamp = hashlib.sha1(f"{digest}{asset['updated_at']}{asset['size']}".encode()).hexdigest()[:12]
+        pack = cls(pack_id, pack_id, "", asset["browser_download_url"], asset["size"], stamp)
+        archive = pack.archive
+        try:
+            if download(pack.url, archive, size=pack.size):
+                if digest.startswith("sha256:") and _checksum(archive, "sha256") != digest[7:]:
+                    raise InstallError(f"невірна контрольна сума: {pack.url}")
+                for stale in archive.parent.iterdir():
+                    if stale != archive:
+                        stale.unlink(missing_ok=True)
+            details = describe(archive)
+        except Exception:
+            archive.unlink(missing_ok=True)  # зіпсований архів не лишається в кеші назавжди
+            raise
+        return replace(pack, name=details["name"] or pack_id, version=details["version"],
+                       server=details["server"])
+
+    @property
+    def archive(self) -> Path:
+        return CACHE_DIR / "packs" / self.id / f"{self.stamp}.mrpack"
 
     @property
     def instance(self) -> "Instance":
@@ -468,21 +503,29 @@ class Pack:
 
 
 def list_packs() -> list[Pack]:
-    cache = CACHE_DIR / "packs.json"
+    """Паки — це .mrpack-файли релізу packs, окремого індексу немає. Відповідь GitHub кешується:
+    без мережі чи з вичерпаним лімітом запитів список береться з диска."""
+    cache = CACHE_DIR / "packs-release.json"
     try:
-        packs = fetch_cached_json(PACKS_INDEX, cache)
-    except requests.HTTPError as error:
-        status = error.response.status_code if error.response is not None else 0
-        if status in (401, 403, 404, 410):
-            log.warning("Індексу паків немає (%s): %s", status, PACKS_INDEX)
+        release = fetch_cached_json(PACKS_RELEASE, cache)
+    except Exception as error:
+        response = getattr(error, "response", None)
+        if response is not None and response.status_code == 404:
+            log.warning("Релізу з паками немає: %s", PACKS_RELEASE)
             cache.unlink(missing_ok=True)
             return []
         log.error("Не вдалося отримати список паків: %s", error)
-        packs = _read_json(cache, [])
-    except Exception as error:
-        log.error("Не вдалося отримати список паків: %s", error)
-        packs = _read_json(cache, [])
-    return [Pack.parse(pack) for pack in packs]
+        release = _read_json(cache, {})
+
+    packs = []
+    for asset in release.get("assets", []):
+        if not asset["name"].endswith(".mrpack"):
+            continue
+        try:
+            packs.append(Pack.read(asset))
+        except Exception as error:
+            log.error("Пак %s пропущено: %s", asset["name"], error)
+    return sorted(packs, key=lambda pack: pack.id)
 
 
 class Instance:
@@ -529,8 +572,8 @@ class Instance:
         deep = update or force
         installer = Installer(self.dir, progress, deep)
         progress(f"Завантаження {pack.name}", 0)
-        archive = CACHE_DIR / f"{pack.id}-{pack.version}.mrpack"
-        download(pack.url, archive, pack.sha1, revalidate=deep and not pack.sha1)
+        archive = pack.archive
+        download(pack.url, archive, size=pack.size)
 
         root = self.dir.resolve()
         with zipfile.ZipFile(archive) as bundle:

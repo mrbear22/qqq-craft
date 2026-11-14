@@ -23,7 +23,7 @@ from config import (APP_DIR, BASE_DIR, FLASK_PORT, INSTANCES_DIR, LEGACY_DIRS, L
                     VERSION, alert, ask, max_ram_gb, open_path, screen_modes)
 
 STATUS_TTL = 30
-PACKS_TTL = 60
+PACKS_TTL = 600  # список паків — запит до API GitHub, а без токена їх лише 60 на годину з однієї адреси
 LEGACY_SIGNS = ("qqq-craft.exe", "launcher.exe", "unins000.exe", "saves", "mods", "versions")
 
 log = logging.getLogger("launcher")
